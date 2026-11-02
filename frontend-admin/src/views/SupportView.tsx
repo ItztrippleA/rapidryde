@@ -87,7 +87,7 @@ export function SupportView() {
                 onClick={() => setSelectedId(thread.id)}
                 sx={{ px: 1.5, py: 1.3, cursor: "pointer", borderBottom: "1px solid", borderColor: "divider", bgcolor: active ? "action.selected" : "transparent", "&:hover": { bgcolor: active ? "action.selected" : "action.hover" } }}
               >
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                   <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{nameOf(thread)}</Typography>
                   <Pill tone={thread.party === "driver" ? "warn" : "ok"}>{titleCase(thread.party)}</Pill>
                   <Box sx={{ ml: "auto" }}><Pill tone={thread.status === "waiting" ? "hot" : thread.status === "open" ? "ok" : "off"}>{titleCase(thread.status)}</Pill></Box>

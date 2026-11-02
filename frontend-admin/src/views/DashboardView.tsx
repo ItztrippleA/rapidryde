@@ -1,13 +1,16 @@
 "use client";
 
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 import { motion } from "framer-motion";
 import NextLink from "next/link";
 import { useSession } from "@/components/access/Gate";
+import { Bars, ChartCard, Donut } from "@/components/charts/Charts";
 import { PageHeader } from "@/components/ui/Chrome";
 import type { Section } from "@/lib/access";
-import { naira } from "@/lib/format";
+import { naira, titleCase } from "@/lib/format";
+import { sumBy, tally } from "@/lib/series";
 import { useAdminStore } from "@/store/useAdminStore";
 
 export function DashboardView() {
@@ -16,14 +19,17 @@ export function DashboardView() {
   const rides = useAdminStore((state) => state.rides);
   const deliveries = useAdminStore((state) => state.deliveries);
   const activity = useAdminStore((state) => state.activity);
-  const waitingChats = useAdminStore((state) => state.chats.filter((thread) => thread.status === "waiting").length);
+  const chats = useAdminStore((state) => state.chats);
+  const waitingChats = chats.filter((thread) => thread.status === "waiting").length;
   const online = drivers.filter((driver) => driver.online).length;
   const liveRides = rides.filter((ride) => ride.status === "on_trip" || ride.status === "assigned" || ride.status === "searching").length;
   const openDeliveries = deliveries.filter((delivery) => delivery.status !== "delivered" && delivery.status !== "cancelled").length;
   const earnings = drivers.reduce((sum, driver) => sum + driver.earningsToday, 0);
   const rideSpend = customers.reduce((sum, customer) => sum + (customer.rideSpend || 0), 0);
   const wallets = customers.reduce((sum, customer) => sum + (customer.wallet || 0), 0);
+  const classes = useAdminStore((state) => state.pricing.classes);
   const { canView } = useSession();
+  const className = (id: string) => classes.find((item) => item.id === id)?.label ?? titleCase(id);
 
   const cards = (
     [
@@ -39,7 +45,12 @@ export function DashboardView() {
 
   return (
     <Box>
-      <PageHeader kicker="Overview" title="Overview" lede="What is moving in Abuja and Lagos right now. Cards follow the desks this role can open." />
+      <PageHeader
+        kicker="Overview"
+        title="Overview"
+        lede="What is moving in Abuja and Lagos right now. The charts follow the desks this role can open."
+        action={canView("analytics") ? <Button component={NextLink} href="/analytics" variant="contained">Analytics</Button> : null}
+      />
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", lg: "repeat(3, 1fr)" }, gap: 1.5 }}>
         {cards.map((card, index) => (
           <Box
@@ -56,6 +67,38 @@ export function DashboardView() {
             </Box>
           </Box>
         ))}
+      </Box>
+      <Box sx={{ mt: 2, display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" }, gap: 1.5 }}>
+        {canView("rides") ? (
+          <ChartCard title="Rides on the desk">
+            <Donut rows={tally(rides, ["searching", "assigned", "on_trip", "completed", "cancelled"], (ride) => ride.status)} />
+          </ChartCard>
+        ) : null}
+        {canView("rides") ? (
+          <ChartCard title="Fare by class">
+            <Bars rows={sumBy(rides, classes.map((item) => item.id), (ride) => ride.classId, (ride) => ride.fare, className).map((row) => ({ ...row, display: naira(row.value) }))} />
+          </ChartCard>
+        ) : null}
+        {canView("drivers") ? (
+          <ChartCard title="Driver earnings today" note="Gross, before fuel.">
+            <Bars rows={[...drivers].sort((a, b) => b.earningsToday - a.earningsToday).slice(0, 5).map((driver) => ({ label: driver.name, value: driver.earningsToday, display: naira(driver.earningsToday) }))} />
+          </ChartCard>
+        ) : null}
+        {canView("customers") ? (
+          <ChartCard title="Customer ride spend" note="Completed fares so far.">
+            <Bars rows={[...customers].sort((a, b) => (b.rideSpend || 0) - (a.rideSpend || 0)).slice(0, 5).map((customer) => ({ label: customer.name, value: customer.rideSpend || 0, display: naira(customer.rideSpend || 0) }))} />
+          </ChartCard>
+        ) : null}
+        {canView("deliveries") ? (
+          <ChartCard title="Deliveries">
+            <Donut rows={tally(deliveries, ["new", "assigned", "picked_up", "delivered", "cancelled"], (delivery) => delivery.status)} />
+          </ChartCard>
+        ) : null}
+        {canView("support") ? (
+          <ChartCard title="Support chats">
+            <Donut rows={tally(chats, ["waiting", "open", "closed"], (thread) => thread.status)} />
+          </ChartCard>
+        ) : null}
       </Box>
       <Box sx={{ mt: 3, p: 2.5, borderRadius: "8px", border: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
         <Typography variant="h3">Latest on the desk</Typography>

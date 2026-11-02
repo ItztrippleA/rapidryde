@@ -7,6 +7,7 @@ import DarkModeOutlinedIcon from "@mui/icons-material/DarkModeOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import DirectionsCarOutlinedIcon from "@mui/icons-material/DirectionsCarOutlined";
 import GroupOutlinedIcon from "@mui/icons-material/GroupOutlined";
+import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
 import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
 import LightModeOutlinedIcon from "@mui/icons-material/LightModeOutlined";
 import LocalOfferOutlinedIcon from "@mui/icons-material/LocalOfferOutlined";
@@ -41,7 +42,10 @@ import { useAdminStore } from "@/store/useAdminStore";
 import { useUiStore } from "@/store/useUiStore";
 
 const groups: { label: string; items: { href: string; section: Section; label: string; icon: typeof DashboardOutlinedIcon }[] }[] = [
-  { label: "Overview", items: [{ href: "/", section: "dashboard", label: "Overview", icon: DashboardOutlinedIcon }] },
+  { label: "Overview", items: [
+    { href: "/", section: "dashboard", label: "Overview", icon: DashboardOutlinedIcon },
+    { href: "/analytics", section: "analytics", label: "Analytics", icon: InsightsOutlinedIcon },
+  ] },
   {
     label: "People",
     items: [

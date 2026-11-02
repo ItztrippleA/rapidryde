@@ -2,6 +2,7 @@ import type { StaffRole } from "./types";
 
 export type Section =
   | "dashboard"
+  | "analytics"
   | "drivers"
   | "customers"
   | "map"
@@ -18,6 +19,7 @@ export type Section =
 
 export const sections: Section[] = [
   "dashboard",
+  "analytics",
   "drivers",
   "customers",
   "map",
@@ -35,6 +37,7 @@ export const sections: Section[] = [
 
 export const sectionLabel: Record<Section, string> = {
   dashboard: "Overview",
+  analytics: "Analytics",
   drivers: "Drivers",
   customers: "Customers",
   map: "Fleet map",
@@ -63,19 +66,19 @@ const all = sections;
 export const grants: Record<StaffRole, { view: Section[]; edit: Section[] }> = {
   owner: { view: all, edit: all },
   operations: {
-    view: ["dashboard", "drivers", "customers", "map", "rides", "deliveries", "zones", "support"],
+    view: ["dashboard", "analytics", "drivers", "customers", "map", "rides", "deliveries", "zones", "support"],
     edit: ["drivers", "customers", "rides", "deliveries", "zones"],
   },
   support: {
-    view: ["dashboard", "customers", "drivers", "map", "rides", "deliveries", "notifications", "support"],
+    view: ["dashboard", "analytics", "customers", "drivers", "map", "rides", "deliveries", "notifications", "support"],
     edit: ["customers", "rides", "deliveries", "notifications", "support"],
   },
   finance: {
-    view: ["dashboard", "rides", "pricing", "subscriptions", "promos"],
+    view: ["dashboard", "analytics", "rides", "pricing", "subscriptions", "promos"],
     edit: ["pricing", "subscriptions", "promos"],
   },
   viewer: {
-    view: ["dashboard", "drivers", "customers", "map", "rides", "deliveries", "support"],
+    view: ["dashboard", "analytics", "drivers", "customers", "map", "rides", "deliveries", "support"],
     edit: [],
   },
 };
