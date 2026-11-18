@@ -7,7 +7,7 @@ export type DriverDutyStatus = 'offline' | 'available' | 'on_trip' | 'busy';
 export class DriversService {
   constructor(private readonly store: PgStore) {}
 
-  async goOnline(
+  goOnline(
     driverId: string,
     body: {
       city?: string;
@@ -20,9 +20,9 @@ export class DriversService {
       driverId,
       status: 'available',
       city: body.city || 'abuja',
-      latitude: body.latitude,
-      longitude: body.longitude,
-      heading: body.heading,
+      latitude: body.latitude ?? null,
+      longitude: body.longitude ?? null,
+      heading: body.heading ?? null,
       activeRideId: null,
       poolId: null,
       online: true,
@@ -34,12 +34,12 @@ export class DriversService {
     return this.store.upsertPresence({
       driverId,
       status: 'offline',
-      city: current?.city || undefined,
-      latitude: current?.latitude,
-      longitude: current?.longitude,
-      heading: current?.heading,
+      city: current?.city ?? undefined,
+      latitude: current?.latitude ?? null,
+      longitude: current?.longitude ?? null,
+      heading: current?.heading ?? null,
       activeRideId: null,
-      poolId: current?.poolId,
+      poolId: current?.poolId ?? null,
       online: false,
     });
   }
@@ -61,7 +61,7 @@ export class DriversService {
         city: body.city,
         latitude: body.latitude,
         longitude: body.longitude,
-        heading: body.heading,
+        heading: body.heading ?? null,
         activeRideId: null,
         poolId: null,
         online: false,
@@ -80,13 +80,13 @@ export class DriversService {
     return this.store.upsertPresence({
       driverId,
       status,
-      city: current?.city || undefined,
-      latitude: current?.latitude,
-      longitude: current?.longitude,
-      heading: current?.heading,
+      city: current?.city ?? undefined,
+      latitude: current?.latitude ?? null,
+      longitude: current?.longitude ?? null,
+      heading: current?.heading ?? null,
       activeRideId:
         opts?.rideId ?? (status === 'on_trip' ? current?.activeRideId : null),
-      poolId: opts?.poolId ?? current?.poolId,
+      poolId: opts?.poolId ?? current?.poolId ?? null,
       online,
     });
   }
@@ -106,14 +106,15 @@ export class DriversService {
     return presence;
   }
 
-  async liveForAdmin(city?: string, onlineOnly = true) {
+  liveForAdmin(city?: string, onlineOnly = true) {
     return this.store.listLiveDrivers({ city, onlineOnly });
   }
 
   async requireDriver(driverId: string) {
     const user = await this.store.findUserById(driverId);
-    if (!user || user.role !== 'driver')
+    if (!user || user.role !== 'driver') {
       throw new NotFoundException('Driver not found');
+    }
     return user;
   }
 }

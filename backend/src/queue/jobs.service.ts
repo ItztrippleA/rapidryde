@@ -100,7 +100,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           },
         ),
       );
-      this.log.log(`Queue mode: redis (${redisUrl})`);
+      this.log.log('Queue mode: redis (BullMQ)');
       return;
     }
     if (redisUrl) {
