@@ -1,0 +1,560 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { DriversService } from '../drivers/drivers.service';
+import { PricingService } from '../pricing/pricing.service';
+import { JobsService } from '../queue/jobs.service';
+import { SchedulerService } from '../scheduler/scheduler.service';
+import { PgStore } from '../storage/pg-store';
+import {
+  normalizeRide,
+  type ChatEvent,
+  type FareEvent,
+  type LocationPing,
+  type PaymentMethod,
+  type RideStatus,
+  type RideStop,
+  type StatusEvent,
+} from './ride.types';
+
+export type CreateRideInput = {
+  customerId: string;
+  customerName?: string;
+  customerPhone?: string;
+  pickup: string;
+  dropoff: string;
+  pickupLat: number;
+  pickupLng: number;
+  dropLat: number;
+  dropLng: number;
+  stops?: RideStop[];
+  km: number;
+  minutes: number;
+  classId?: string;
+  promoCode?: string;
+  fareOverride?: number;
+  payment?: PaymentMethod;
+  note?: string;
+  along?: boolean;
+  poolId?: string;
+  seatIndex?: number;
+  scheduledAt?: number | null;
+  city?: string;
+  customerLocation?: { latitude: number; longitude: number };
+};
+
+const TRAIL_CAP = 400;
+const CHAT_CAP = 200;
+
+@Injectable()
+export class RidesService {
+  constructor(
+    private readonly store: PgStore,
+    private readonly pricing: PricingService,
+    private readonly jobs: JobsService,
+    private readonly drivers: DriversService,
+    private readonly scheduler: SchedulerService,
+  ) {}
+
+  async create(input: CreateRideInput) {
+    const factors = await this.pricing.getFactors();
+    const quote = await this.pricing.quote({
+      km: input.km,
+      minutes: input.minutes,
+      classId: input.classId,
+      promoCode: input.promoCode,
+    });
+    const fare =
+      input.fareOverride && input.fareOverride > 0
+        ? input.fareOverride
+        : quote.fare;
+    const commissionPercent = factors.commissionPercent;
+    const earnings = Math.round(fare * (1 - commissionPercent / 100));
+    const classId = input.classId || 'ryde';
+    const classLabel =
+      factors.classes.find((item) => item.id === classId)?.label || classId;
+    const now = Date.now();
+    const user = await this.store.findUserById(input.customerId);
+
+    const ride = normalizeRide({
+      id: `ride_${now.toString(36)}`,
+      city: input.city || 'abuja',
+      classId,
+      classLabel,
+      status: 'searching',
+      payment: input.payment || 'cash',
+      customerId: input.customerId,
+      customer: {
+        id: input.customerId,
+        name: input.customerName || user?.name || 'Rider',
+        phone: input.customerPhone || user?.phone || '',
+      },
+      driverId: null,
+      driver: null,
+      pickup: {
+        id: 'pickup',
+        label: input.pickup,
+        latitude: input.pickupLat,
+        longitude: input.pickupLng,
+      },
+      dropoff: {
+        id: 'dropoff',
+        label: input.dropoff,
+        latitude: input.dropLat,
+        longitude: input.dropLng,
+      },
+      stops: input.stops || [],
+      plannedKm: quote.km,
+      plannedMinutes: quote.minutes,
+      quoted: quote.fare,
+      fare,
+      earnings,
+      commissionPercent,
+      promoCode: input.promoCode || '',
+      along: Boolean(input.along) || classId === 'along',
+      poolId: input.poolId || '',
+      seatIndex: input.seatIndex ?? -1,
+      customerLocation: input.customerLocation
+        ? { ...input.customerLocation, at: now }
+        : { latitude: input.pickupLat, longitude: input.pickupLng, at: now },
+      statusHistory: [
+        {
+          status: 'searching',
+          at: now,
+          by: 'customer',
+          note: 'Ride requested',
+        },
+      ],
+      fareHistory: [
+        {
+          fare,
+          quoted: quote.fare,
+          at: now,
+          by: 'customer',
+          note: 'Initial quote',
+        },
+      ],
+      note: input.note || '',
+      scheduledAt: input.scheduledAt ?? null,
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await this.store.upsertRide(ride);
+
+    if (ride.scheduledAt && ride.scheduledAt > Date.now()) {
+      void this.scheduler.scheduleRideReminders(ride.id, ride.scheduledAt, [
+        ride.customerId,
+      ]);
+    } else {
+      void this.jobs.enqueue('dispatch.match', {
+        rideId: ride.id,
+        pickupLat: input.pickupLat,
+        pickupLng: input.pickupLng,
+        radiusKm: 6,
+      });
+    }
+    void this.jobs.enqueue('analytics.track', {
+      name: 'ride_requested',
+      props: { rideId: ride.id, fare, classId, customerId: input.customerId },
+    });
+
+    return { ride, quote };
+  }
+
+  /** Open or join an Along / batch pool */
+  async createOrJoinPool(
+    input: CreateRideInput & { customerId: string; joinPoolId?: string },
+  ) {
+    let poolId = input.joinPoolId;
+    if (!poolId) {
+      const now = Date.now();
+      poolId = `pool_${now.toString(36)}`;
+      await this.store.upsertPool({
+        id: poolId,
+        city: input.city || 'abuja',
+        classId: input.classId || 'along',
+        status: 'open',
+        capacity: 3,
+        seatsTaken: 0,
+        pickupLabel: input.pickup,
+        dropoffLabel: input.dropoff,
+        pickupLat: input.pickupLat,
+        pickupLng: input.pickupLng,
+        dropLat: input.dropLat,
+        dropLng: input.dropLng,
+        rideIds: [],
+        scheduledAt: input.scheduledAt ?? undefined,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const pool = await this.store.getPool(poolId);
+    if (!pool || pool.status !== 'open')
+      throw new BadRequestException('Pool not available');
+    if (pool.seatsTaken >= pool.capacity)
+      throw new BadRequestException('Pool is full');
+
+    const created = await this.create({
+      ...input,
+      along: true,
+      poolId: pool.id,
+      classId: input.classId || 'along',
+    });
+    const rideIds = [...pool.rideIds, created.ride.id];
+    await this.store.upsertPool({
+      id: pool.id,
+      city: pool.city,
+      classId: pool.classId,
+      driverId: pool.driverId,
+      capacity: pool.capacity,
+      pickupLabel: pool.pickupLabel,
+      dropoffLabel: pool.dropoffLabel,
+      pickupLat: pool.pickupLat ?? undefined,
+      pickupLng: pool.pickupLng ?? undefined,
+      dropLat: pool.dropLat ?? undefined,
+      dropLng: pool.dropLng ?? undefined,
+      scheduledAt: pool.scheduledAt ?? undefined,
+      createdAt: pool.createdAt,
+      seatsTaken: pool.seatsTaken + 1,
+      rideIds,
+      status: pool.seatsTaken + 1 >= pool.capacity ? 'full' : 'open',
+      updatedAt: Date.now(),
+    });
+    return { ...created, pool: await this.store.getPool(pool.id) };
+  }
+
+  listPools(city?: string) {
+    return this.store.listOpenPools(city);
+  }
+
+  list(filter?: {
+    status?: string;
+    customerId?: string;
+    driverId?: string;
+    limit?: number;
+  }) {
+    return this.store.listRides(filter);
+  }
+
+  async get(id: string) {
+    const ride = await this.store.getRide(id);
+    if (!ride) throw new NotFoundException('Ride not found');
+    return ride;
+  }
+
+  async activeFor(userId: string, role: 'customer' | 'driver' | 'admin') {
+    const open = new Set([
+      'searching',
+      'assigned',
+      'to_pickup',
+      'arrived',
+      'on_trip',
+    ]);
+    const rows = await this.list(
+      role === 'customer'
+        ? { customerId: userId, limit: 50 }
+        : role === 'driver'
+          ? { driverId: userId, limit: 50 }
+          : { limit: 50 },
+    );
+    return rows.find((ride) => open.has(ride.status)) ?? null;
+  }
+
+  async assign(
+    id: string,
+    driverId: string,
+    opts?: {
+      fare?: number;
+      driverName?: string;
+      driverPhone?: string;
+      rating?: number;
+      vehicle?: string;
+      plate?: string;
+      colour?: string;
+      photo?: string;
+      latitude?: number;
+      longitude?: number;
+    },
+  ) {
+    const now = Date.now();
+    const user = await this.store.findUserById(driverId);
+    const next = await this.get(id);
+    next.driverId = driverId;
+    next.driver = {
+      id: driverId,
+      name: opts?.driverName || user?.name || 'Driver',
+      phone: opts?.driverPhone || user?.phone || '',
+      rating: opts?.rating,
+      vehicle: opts?.vehicle,
+      plate: opts?.plate,
+      colour: opts?.colour,
+      photo: opts?.photo,
+    };
+    next.status = 'assigned';
+    next.assignedAt = now;
+    if (opts?.fare && opts.fare > 0) {
+      next.fare = opts.fare;
+      next.earnings = Math.round(
+        opts.fare * (1 - next.commissionPercent / 100),
+      );
+      next.fareHistory.push({
+        fare: next.fare,
+        quoted: next.quoted,
+        at: now,
+        by: 'driver',
+        note: 'Accepted offer',
+      });
+    }
+    if (opts?.latitude != null && opts?.longitude != null) {
+      next.driverLocation = {
+        latitude: opts.latitude,
+        longitude: opts.longitude,
+        at: now,
+      };
+      next.locationTrail.push({
+        role: 'driver',
+        latitude: opts.latitude,
+        longitude: opts.longitude,
+        at: now,
+      });
+    }
+    next.statusHistory.push({
+      status: 'assigned',
+      at: now,
+      by: 'driver',
+      note: 'Driver accepted',
+    });
+    next.updatedAt = now;
+    await this.store.upsertRide(next);
+    await this.drivers.setDuty(driverId, 'busy', {
+      rideId: next.id,
+      poolId: next.poolId || null,
+    });
+
+    if (next.scheduledAt && next.scheduledAt > Date.now()) {
+      void this.scheduler.scheduleRideReminders(next.id, next.scheduledAt, [
+        next.customerId,
+        driverId,
+      ]);
+    }
+
+    void this.jobs.enqueue('notify.push', {
+      userIds: [next.customerId, driverId],
+      title: 'Driver assigned',
+      body: `${next.pickup.label} → ${next.dropoff.label}`,
+      data: { rideId: next.id },
+    });
+    return next;
+  }
+
+  async stage(
+    id: string,
+    status: RideStatus,
+    by: StatusEvent['by'] = 'system',
+    note?: string,
+  ) {
+    const now = Date.now();
+    const next = await this.get(id);
+    next.status = status;
+    next.statusHistory.push({ status, at: now, by, note });
+    if (status === 'arrived') next.arrivedAt = now;
+    if (status === 'on_trip') next.onboardAt = now;
+    if (status === 'to_pickup' && !next.assignedAt) next.assignedAt = now;
+    if (
+      status === 'completed' ||
+      status === 'cancelled' ||
+      status === 'timeout' ||
+      status === 'no_drivers'
+    ) {
+      next.endedAt = now;
+      if (next.onboardAt) {
+        next.actualMinutes = Math.max(
+          1,
+          Math.round((now - next.onboardAt) / 60_000),
+        );
+      }
+    }
+    next.updatedAt = now;
+    await this.store.upsertRide(next);
+
+    if (next.driverId) {
+      if (status === 'on_trip') {
+        await this.drivers.setDuty(next.driverId, 'on_trip', {
+          rideId: next.id,
+          poolId: next.poolId || null,
+        });
+      } else if (
+        status === 'completed' ||
+        status === 'cancelled' ||
+        status === 'timeout' ||
+        status === 'no_drivers'
+      ) {
+        const presence = await this.store.getPresence(next.driverId);
+        if (presence?.online) {
+          await this.drivers.setDuty(next.driverId, 'available', {
+            rideId: null,
+          });
+        } else {
+          await this.drivers.setDuty(next.driverId, 'offline', {
+            rideId: null,
+          });
+        }
+      } else if (
+        status === 'assigned' ||
+        status === 'to_pickup' ||
+        status === 'arrived'
+      ) {
+        await this.drivers.setDuty(next.driverId, 'busy', {
+          rideId: next.id,
+          poolId: next.poolId || null,
+        });
+      }
+    }
+
+    if (status === 'completed') {
+      void this.jobs.enqueue('ledger.settle', { rideId: id });
+      const customer = await this.store.findUserById(next.customerId);
+      if (customer?.email) {
+        void this.jobs.enqueue('mail.send', {
+          to: customer.email,
+          template: 'receipt',
+          vars: { rideId: id, fare: next.fare, email: customer.email },
+        });
+      }
+    }
+    void this.jobs.enqueue('notify.push', {
+      userIds: [next.customerId, ...(next.driverId ? [next.driverId] : [])],
+      title: 'Trip update',
+      body: status,
+      data: { rideId: id, stage: status },
+    });
+    return next;
+  }
+
+  async updateFare(
+    id: string,
+    fare: number,
+    by: FareEvent['by'],
+    note?: string,
+  ) {
+    const now = Date.now();
+    const next = await this.get(id);
+    next.fare = Math.max(0, Math.round(fare));
+    next.earnings = Math.round(next.fare * (1 - next.commissionPercent / 100));
+    next.fareHistory.push({
+      fare: next.fare,
+      quoted: next.quoted,
+      at: now,
+      by,
+      note,
+    });
+    next.updatedAt = now;
+    await this.store.upsertRide(next);
+    return next;
+  }
+
+  async pingLocation(
+    id: string,
+    role: 'driver' | 'customer',
+    actorId: string,
+    point: { latitude: number; longitude: number; heading?: number },
+  ) {
+    const now = Date.now();
+    const next = await this.get(id);
+    if (role === 'driver' && next.driverId && next.driverId !== actorId) {
+      throw new ForbiddenException('Not your ride');
+    }
+    if (role === 'customer' && next.customerId !== actorId) {
+      throw new ForbiddenException('Not your ride');
+    }
+    const ping: LocationPing = {
+      role,
+      latitude: point.latitude,
+      longitude: point.longitude,
+      heading: point.heading,
+      at: now,
+    };
+    if (role === 'driver') next.driverLocation = { ...ping };
+    else next.customerLocation = { ...ping };
+    next.locationTrail = [...next.locationTrail, ping].slice(-TRAIL_CAP);
+    next.updatedAt = now;
+    await this.store.upsertRide(next);
+    return {
+      id: next.id,
+      status: next.status,
+      driverLocation: next.driverLocation,
+      customerLocation: next.customerLocation,
+      updatedAt: next.updatedAt,
+    };
+  }
+
+  async addChat(
+    id: string,
+    from: ChatEvent['from'],
+    actorId: string,
+    payload: {
+      text?: string;
+      kind?: 'text' | 'voice';
+      audioUrl?: string;
+      durationMs?: number;
+    },
+  ) {
+    const now = Date.now();
+    const next = await this.get(id);
+    if (from === 'driver' && next.driverId !== actorId)
+      throw new ForbiddenException('Not your ride');
+    if (from === 'customer' && next.customerId !== actorId)
+      throw new ForbiddenException('Not your ride');
+    const event: ChatEvent = {
+      id: `msg_${now.toString(36)}`,
+      from,
+      kind: payload.kind || (payload.audioUrl ? 'voice' : 'text'),
+      text: (payload.text || (payload.audioUrl ? 'Voice note' : '')).trim(),
+      audioUrl: payload.audioUrl,
+      durationMs: payload.durationMs,
+      at: now,
+    };
+    next.chat = [...next.chat, event].slice(-CHAT_CAP);
+    next.updatedAt = now;
+    await this.store.upsertRide(next);
+    return next.chat[next.chat.length - 1];
+  }
+
+  async summary(id: string) {
+    const ride = await this.get(id);
+    return {
+      id: ride.id,
+      status: ride.status,
+      customer: ride.customer,
+      driver: ride.driver,
+      pickup: ride.pickup,
+      dropoff: ride.dropoff,
+      stops: ride.stops,
+      fare: ride.fare,
+      quoted: ride.quoted,
+      earnings: ride.earnings,
+      payment: ride.payment,
+      classId: ride.classId,
+      plannedKm: ride.plannedKm,
+      plannedMinutes: ride.plannedMinutes,
+      actualKm: ride.actualKm,
+      actualMinutes: ride.actualMinutes,
+      driverLocation: ride.driverLocation,
+      customerLocation: ride.customerLocation,
+      statusHistory: ride.statusHistory,
+      fareHistory: ride.fareHistory,
+      createdAt: ride.createdAt,
+      assignedAt: ride.assignedAt,
+      arrivedAt: ride.arrivedAt,
+      onboardAt: ride.onboardAt,
+      endedAt: ride.endedAt,
+      updatedAt: ride.updatedAt,
+    };
+  }
+}
