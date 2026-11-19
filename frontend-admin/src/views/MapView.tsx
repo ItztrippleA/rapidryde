@@ -362,6 +362,9 @@ export function MapView() {
             online: driver.online,
             status: driver.status,
             heading: driver.heading ?? seedHeading(driver.driverId),
+            along: Boolean(driver.poolId),
+            poolTaken: driver.poolId ? 1 : 0,
+            poolTotal: 3,
           };
         });
     }

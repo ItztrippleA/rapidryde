@@ -273,7 +273,7 @@ export function RidesView() {
           ) : null}
           {selected.statusHistory?.length ? (
             <Box>
-              <Typography fontWeight={700}>Status history</Typography>
+              <Typography sx={{ fontWeight: 700 }}>Status history</Typography>
               {selected.statusHistory.map((event, index) => (
                 <Typography key={`${event.at}-${index}`} color="text.secondary" sx={{ fontSize: 13 }}>
                   {new Date(event.at).toLocaleString()} · {event.status}
@@ -338,7 +338,16 @@ export function RidesView() {
           </>
         ) : null}
       </Editor>
-      <Confirm open={Boolean(removeId)} title="Remove this ride?" onCancel={() => setRemoveId(null)} onConfirm={() => { if (removeId) removeRide(removeId); setRemoveId(null); }} />
+      <Confirm
+        open={Boolean(removeId)}
+        title="Remove this ride?"
+        body="This removes the ride from the local desk list. Live Nest sessions are unchanged."
+        onClose={() => setRemoveId(null)}
+        onConfirm={() => {
+          if (removeId) removeRide(removeId);
+          setRemoveId(null);
+        }}
+      />
     </Box>
   );
 }
