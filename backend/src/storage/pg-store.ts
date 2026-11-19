@@ -63,6 +63,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS state TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS lga TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS identity JSONB NOT NULL DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS otps (
   phone TEXT NOT NULL,
@@ -104,11 +105,17 @@ CREATE TABLE IF NOT EXISTS driver_presence (
   active_ride_id TEXT,
   pool_id TEXT,
   online BOOLEAN NOT NULL DEFAULT FALSE,
-  last_seen_at BIGINT NOT NULL
+  last_seen_at BIGINT NOT NULL,
+  max_dispatch_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10,
+  expand_radius_when_idle BOOLEAN NOT NULL DEFAULT FALSE,
+  effective_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10
 );
 CREATE INDEX IF NOT EXISTS driver_presence_status_idx ON driver_presence (status);
 CREATE INDEX IF NOT EXISTS driver_presence_city_idx ON driver_presence (city);
 CREATE INDEX IF NOT EXISTS driver_presence_online_idx ON driver_presence (online);
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS max_dispatch_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS expand_radius_when_idle BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS effective_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10;
 
 CREATE TABLE IF NOT EXISTS ride_pools (
   id TEXT PRIMARY KEY,
@@ -320,6 +327,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       state: row.state || undefined,
       city: row.city || undefined,
       lga: row.lga || undefined,
+      identity: (row.identity as StoredUser['identity']) || {},
       status: row.status,
       createdAt: Number(row.created_at),
       updatedAt: row.updated_at ? Number(row.updated_at) : undefined,
@@ -399,9 +407,9 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       `INSERT INTO users (
          id, role, phone, email, google_id, password_hash, name,
          first_name, last_name, middle_name, referral, photo_url,
-         dob, gender, address, state, city, lga, status, created_at, updated_at
+         dob, gender, address, state, city, lga, identity, status, created_at, updated_at
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
        )
        ON CONFLICT (id) DO UPDATE SET
          role = EXCLUDED.role,
@@ -421,6 +429,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          state = EXCLUDED.state,
          city = EXCLUDED.city,
          lga = EXCLUDED.lga,
+         identity = COALESCE(EXCLUDED.identity, users.identity),
          status = EXCLUDED.status,
          updated_at = EXCLUDED.updated_at`,
       [
@@ -442,6 +451,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         user.state || null,
         user.city || null,
         user.lga || null,
+        JSON.stringify(user.identity || {}),
         user.status,
         user.createdAt,
         updatedAt,
@@ -803,12 +813,23 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     activeRideId?: string | null;
     poolId?: string | null;
     online: boolean;
+    maxDispatchRadiusKm?: number | null;
+    expandRadiusWhenIdle?: boolean | null;
+    effectiveRadiusKm?: number | null;
   }) {
     const now = Date.now();
+    const current = await this.getPresence(row.driverId);
+    const maxKm =
+      row.maxDispatchRadiusKm ?? current?.maxDispatchRadiusKm ?? 10;
+    const expand =
+      row.expandRadiusWhenIdle ?? current?.expandRadiusWhenIdle ?? false;
+    const effective =
+      row.effectiveRadiusKm ?? current?.effectiveRadiusKm ?? maxKm;
     await this.pool.query(
       `INSERT INTO driver_presence (
-         driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at,
+         max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (driver_id) DO UPDATE SET
          status = EXCLUDED.status,
          city = COALESCE(EXCLUDED.city, driver_presence.city),
@@ -818,7 +839,10 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          active_ride_id = EXCLUDED.active_ride_id,
          pool_id = EXCLUDED.pool_id,
          online = EXCLUDED.online,
-         last_seen_at = EXCLUDED.last_seen_at`,
+         last_seen_at = EXCLUDED.last_seen_at,
+         max_dispatch_radius_km = EXCLUDED.max_dispatch_radius_km,
+         expand_radius_when_idle = EXCLUDED.expand_radius_when_idle,
+         effective_radius_km = EXCLUDED.effective_radius_km`,
       [
         row.driverId,
         row.status,
@@ -830,6 +854,9 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         row.poolId ?? null,
         row.online,
         now,
+        maxKm,
+        expand,
+        effective,
       ],
     );
     return this.getPresence(row.driverId);
@@ -915,6 +942,17 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       poolId: (row.pool_id as string) || null,
       online: Boolean(row.online),
       lastSeenAt: Number(row.last_seen_at),
+      maxDispatchRadiusKm:
+        row.max_dispatch_radius_km != null
+          ? Number(row.max_dispatch_radius_km)
+          : 10,
+      expandRadiusWhenIdle: Boolean(row.expand_radius_when_idle),
+      effectiveRadiusKm:
+        row.effective_radius_km != null
+          ? Number(row.effective_radius_km)
+          : row.max_dispatch_radius_km != null
+            ? Number(row.max_dispatch_radius_km)
+            : 10,
     };
   }
 

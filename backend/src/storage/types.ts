@@ -6,6 +6,16 @@ import type {
 import type { FareFactors } from '../pricing/fare.types';
 import type { RideSession } from '../rides/ride.types';
 
+/** Masked NIN / KYC state for customers and drivers. Full NIN is never stored. */
+export type UserIdentity = {
+  maskedNin?: string;
+  slipAttached?: boolean;
+  status?: 'empty' | 'pending' | 'approved' | 'rejected';
+  failureReason?: string;
+  consented?: boolean;
+  updatedAt?: number;
+};
+
 export type StoredUser = {
   id: string;
   role: 'customer' | 'driver' | 'admin';
@@ -25,6 +35,7 @@ export type StoredUser = {
   state?: string;
   city?: string;
   lga?: string;
+  identity?: UserIdentity;
   status: 'active' | 'pending' | 'suspended' | 'closed' | 'under_review';
   createdAt: number;
   updatedAt?: number;

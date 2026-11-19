@@ -182,6 +182,9 @@ class AssignDto {
   @Type(() => Number)
   @IsNumber()
   longitude?: number;
+
+  @IsOptional()
+  byAdmin?: boolean;
 }
 
 class StageDto {
@@ -319,8 +322,11 @@ export class RidesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin', 'driver')
   @Post(':id/assign')
-  assign(@Param('id') id: string, @Body() body: AssignDto) {
-    return this.rides.assign(id, body.driverId, body);
+  assign(@Param('id') id: string, @Body() body: AssignDto, @Req() req: { user: JwtPayload }) {
+    return this.rides.assign(id, body.driverId, {
+      ...body,
+      byAdmin: req.user.role === 'admin',
+    });
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

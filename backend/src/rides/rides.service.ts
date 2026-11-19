@@ -280,6 +280,8 @@ export class RidesService {
       photo?: string;
       latitude?: number;
       longitude?: number;
+      /** Desk / admin forced match */
+      byAdmin?: boolean;
     },
   ) {
     const now = Date.now();
@@ -307,8 +309,8 @@ export class RidesService {
         fare: next.fare,
         quoted: next.quoted,
         at: now,
-        by: 'driver',
-        note: 'Accepted offer',
+        by: opts?.byAdmin ? 'admin' : 'driver',
+        note: opts?.byAdmin ? 'Assigned by desk' : 'Accepted offer',
       });
     }
     if (opts?.latitude != null && opts?.longitude != null) {
@@ -327,8 +329,8 @@ export class RidesService {
     next.statusHistory.push({
       status: 'assigned',
       at: now,
-      by: 'driver',
-      note: 'Driver accepted',
+      by: opts?.byAdmin ? 'admin' : 'driver',
+      note: opts?.byAdmin ? 'Assigned by desk' : 'Driver accepted',
     });
     next.updatedAt = now;
     await this.store.upsertRide(next);

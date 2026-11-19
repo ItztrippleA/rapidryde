@@ -50,7 +50,7 @@ export type FareEvent = {
   fare: number;
   quoted: number;
   at: number;
-  by: 'customer' | 'driver' | 'system';
+  by: 'customer' | 'driver' | 'system' | 'admin';
   note?: string;
 };
 
