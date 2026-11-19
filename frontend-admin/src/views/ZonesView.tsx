@@ -20,7 +20,7 @@ import { FleetMap } from "@/components/map/FleetMap";
 import { Confirm, Editor, PageHeader, Pill } from "@/components/ui/Chrome";
 import { useEdit } from "@/components/access/Gate";
 import { cityLabel, naira, titleCase, uid } from "@/lib/format";
-import type { DeliveryKind, DeliveryZone, RideZone } from "@/lib/types";
+import type { CityId, DeliveryKind, DeliveryZone, RideZone } from "@/lib/types";
 import { useAdminStore } from "@/store/useAdminStore";
 
 const services: DeliveryKind[] = ["courier", "freight", "food", "grocery"];
@@ -34,10 +34,14 @@ export function ZonesView() {
   const saveDeliveryZone = useAdminStore((state) => state.saveDeliveryZone);
   const removeDeliveryZone = useAdminStore((state) => state.removeDeliveryZone);
   const [tab, setTab] = useState<"ride" | "delivery">("ride");
+  const [mapCity, setMapCity] = useState<CityId>("abuja");
   const [rideDraft, setRideDraft] = useState<RideZone | null>(null);
   const [deliveryDraft, setDeliveryDraft] = useState<DeliveryZone | null>(null);
   const [creating, setCreating] = useState(false);
   const [removeId, setRemoveId] = useState<string | null>(null);
+  const mapRegions = (tab === "ride" ? rideZones : deliveryZones)
+    .filter((zone) => zone.city === mapCity)
+    .map((zone) => ({ ...zone, kind: tab }));
 
   return (
     <Box>
@@ -97,12 +101,22 @@ export function ZonesView() {
             </Table>
           )}
         </Box>
-        <FleetMap
-          selected={null}
-          onSelect={() => undefined}
-          markers={[]}
-          regions={(tab === "ride" ? rideZones : deliveryZones).map((zone) => ({ ...zone, kind: tab }))}
-        />
+        <Box>
+          <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
+            {(["abuja", "lagos"] as const).map((id) => (
+              <Button key={id} size="small" variant={mapCity === id ? "contained" : "outlined"} onClick={() => setMapCity(id)}>
+                {cityLabel(id)}
+              </Button>
+            ))}
+          </Box>
+          <FleetMap
+            city={mapCity}
+            selected={null}
+            onSelect={() => undefined}
+            markers={[]}
+            regions={mapRegions}
+          />
+        </Box>
       </Box>
 
       <Editor open={Boolean(rideDraft)} title={creating ? "New ride zone" : "Edit ride zone"} onClose={() => setRideDraft(null)} onSave={() => { if (!rideDraft || !rideDraft.name.trim()) return; saveRideZone({ ...rideDraft, surge: Number(rideDraft.surge) || 1, minFare: Number(rideDraft.minFare) || 0 }, creating); setRideDraft(null); }}>

@@ -88,14 +88,14 @@ export function Editor({
   );
 }
 
-export function Confirm({ open, title, body, onClose, onConfirm }: { open: boolean; title: string; body: string; onClose: () => void; onConfirm: () => void }) {
+export function Confirm({ open, title, body, onClose, onConfirm, confirmLabel = "Delete", confirmColor = "error" }: { open: boolean; title: string; body: string; onClose: () => void; onConfirm: () => void; confirmLabel?: string; confirmColor?: "error" | "primary" }) {
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>{title}</DialogTitle>
       <DialogContent><Typography color="text.secondary">{body}</Typography></DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
         <Button onClick={onClose} color="inherit">Keep</Button>
-        <Button color="error" variant="contained" onClick={onConfirm}>Delete</Button>
+        <Button color={confirmColor} variant="contained" onClick={onConfirm}>{confirmLabel}</Button>
       </DialogActions>
     </Dialog>
   );

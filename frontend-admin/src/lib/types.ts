@@ -1,7 +1,7 @@
 export type CityId = "abuja" | "lagos";
 export type AccountStatus = "active" | "suspended" | "pending" | "closed";
 export type NinStatus = "pending" | "verified" | "failed";
-export type RideClassId = "ryde" | "comfort" | "xl" | "executive" | "green" | "moto" | "keke";
+export type RideClassId = "ryde" | "comfort" | "xl" | "executive" | "green" | "moto" | "keke" | "along";
 export type DeliveryKind = "courier" | "freight" | "food" | "grocery";
 export type RideStatus = "searching" | "assigned" | "on_trip" | "completed" | "cancelled";
 export type DeliveryStatus = "new" | "assigned" | "picked_up" | "delivered" | "cancelled";
@@ -27,6 +27,28 @@ export interface Driver {
   y: number;
   papers: "valid" | "expiring" | "expired";
   earningsToday: number;
+  profile?: DriverProfile;
+}
+
+export interface DriverProfile {
+  middleName: string;
+  dob: string;
+  gender: "" | "Female" | "Male" | "Prefer not to say";
+  address: string;
+  state: string;
+  lga: string;
+  licenceNumber: string;
+  licenceExpiry: string;
+  colour: string;
+  year: string;
+  category: string;
+  inspection: "not_scheduled" | "scheduled" | "in_progress" | "approved" | "rejected" | "resubmit";
+  bankName: string;
+  maskedAccount: string;
+  bankStatus: "missing" | "pending" | "verified" | "failed";
+  emergencyName: string;
+  emergencyRelationship: string;
+  emergencyPhone: string;
 }
 
 export interface Customer {
@@ -91,6 +113,13 @@ export interface DeliveryZone {
   ry: number;
 }
 
+export interface PoolRider {
+  name: string;
+  pickup: string;
+  dropoff: string;
+  fare: number;
+}
+
 export interface Ride {
   id: string;
   city: CityId;
@@ -103,6 +132,11 @@ export interface Ride {
   fare: number;
   status: RideStatus;
   when: string;
+  /** Along / shared car */
+  along?: boolean;
+  poolId?: string;
+  seatsTotal?: number;
+  riders?: PoolRider[];
 }
 
 export interface Delivery {
@@ -168,10 +202,17 @@ export interface ClassRate {
   multiplier: number;
 }
 
+export type DistanceMode = "flat" | "banded";
+
 export interface Pricing {
+  /** B — base fare */
   baseFare: number;
+  /** Rd — flat ₦/km when distanceMode is flat */
+  perKm: number;
+  /** Rt — ₦/minute */
   perMinute: number;
   minimumFare: number;
+  /** Part of E */
   bookingFee: number;
   cancellationFee: number;
   waitPerMinute: number;
@@ -180,6 +221,8 @@ export interface Pricing {
   nightMultiplier: number;
   rainMultiplier: number;
   intercityPerKm: number;
+  /** flat → D×perKm; banded → sum of band slices */
+  distanceMode: DistanceMode;
   bands: DistanceBand[];
   classes: ClassRate[];
 }

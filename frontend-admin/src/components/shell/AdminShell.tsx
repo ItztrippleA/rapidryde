@@ -15,6 +15,7 @@ import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined
 import MapOutlinedIcon from "@mui/icons-material/MapOutlined";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
+import MailOutlinedIcon from "@mui/icons-material/MailOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import PaymentsOutlinedIcon from "@mui/icons-material/PaymentsOutlined";
 import RouteOutlinedIcon from "@mui/icons-material/RouteOutlined";
@@ -75,6 +76,7 @@ const groups: { label: string; items: { href: string; section: Section; label: s
     items: [
       { href: "/support", section: "support", label: "Chat", icon: ChatOutlinedIcon },
       { href: "/notifications", section: "notifications", label: "Notifications", icon: NotificationsNoneOutlinedIcon },
+      { href: "/email", section: "email", label: "Email", icon: MailOutlinedIcon },
     ],
   },
   {

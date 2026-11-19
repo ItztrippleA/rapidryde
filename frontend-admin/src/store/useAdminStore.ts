@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { freshData } from "@/data/seed";
+import { readyToGoLive, withProfile } from "@/lib/drivers";
 import type { Activity, AppConfig, ChatMessage, ChatStatus, ChatThread, Customer, Delivery, DeliveryZone, Driver, NoticeTemplate, OutboxItem, Plan, Pricing, Promo, Ride, RideZone, Staff, Subscription } from "@/lib/types";
 
 function completedFare(ride: Ride | undefined) {
@@ -75,10 +76,13 @@ export const useAdminStore = create<AdminState>()(
       reset: () => set({ ...freshData() }),
       note: (text) => set((state) => ({ activity: [stamp(text), ...state.activity].slice(0, 30) })),
       saveDriver: (driver, creating) =>
-        set((state) => ({
-          drivers: upsert(state.drivers, driver, creating),
-          activity: [stamp(`${creating ? "Added" : "Updated"} driver ${driver.name}.`), ...state.activity].slice(0, 30),
-        })),
+        set((state) => {
+          const saved = { ...driver, online: readyToGoLive(driver) && driver.online };
+          return {
+            drivers: upsert(state.drivers, saved, creating),
+            activity: [stamp(`${creating ? "Added" : "Updated"} driver ${saved.name}.`), ...state.activity].slice(0, 30),
+          };
+        }),
       removeDriver: (id) =>
         set((state) => ({
           drivers: state.drivers.filter((driver) => driver.id !== id),
@@ -184,11 +188,12 @@ export const useAdminStore = create<AdminState>()(
           ...customer,
           rideSpend: customer.rideSpend ?? seedSpend.get(customer.id) ?? 0,
         }));
+        const drivers = (saved.drivers ?? current.drivers).map((driver) => withProfile(driver));
         const staff = (saved.staff ?? current.staff).map((member) => ({
           ...member,
           password: member.password || seedPassword.get(member.id) || "",
         }));
-        return { ...current, ...saved, chats: saved.chats ?? current.chats, customers, staff };
+        return { ...current, ...saved, chats: saved.chats ?? current.chats, customers, drivers, staff };
       },
     },
   ),

@@ -50,7 +50,26 @@ export const deliveryZones: DeliveryZone[] = [
 ];
 
 export const rides: Ride[] = [
-  { id: "r_2041", city: "abuja", customerId: "c_adaeze", driverId: "d_amaka", classId: "ryde", pickup: "Gwarinpa estate gate", dropoff: "Wuse II, Zone 5", distanceKm: 8.1, fare: 2100, status: "on_trip", when: "Today, 09:14" },
+  {
+    id: "r_2041",
+    city: "abuja",
+    customerId: "c_adaeze",
+    driverId: "d_amaka",
+    classId: "along",
+    pickup: "Garki Hospital",
+    dropoff: "Wuse 2",
+    distanceKm: 6.4,
+    fare: 3200,
+    status: "on_trip",
+    when: "Today, 09:14",
+    along: true,
+    poolId: "pool_garki_wuse",
+    seatsTotal: 3,
+    riders: [
+      { name: "Adaeze Nwosu", pickup: "Garki Hospital", dropoff: "Wuse 2", fare: 1600 },
+      { name: "Emeka Okafor", pickup: "Central Area", dropoff: "Wuse 2", fare: 1600 },
+    ],
+  },
   { id: "r_2042", city: "abuja", customerId: "c_emeka", driverId: "d_ibrahim", classId: "comfort", pickup: "National Hospital", dropoff: "Jabi Lake Mall", distanceKm: 11.4, fare: 4800, status: "assigned", when: "Today, 09:02" },
   { id: "r_1888", city: "lagos", customerId: "c_lara", driverId: "d_seyi", classId: "executive", pickup: "Eko Hotel", dropoff: "Murtala Muhammed Airport", distanceKm: 22.6, fare: 14600, status: "completed", when: "Today, 07:40" },
   { id: "r_1881", city: "lagos", customerId: "c_kunle", driverId: "d_tunde", classId: "keke", pickup: "Yaba estate gate", dropoff: "Unilag main gate", distanceKm: 4.2, fare: 900, status: "completed", when: "Yesterday, 18:12" },
@@ -86,16 +105,18 @@ export const outbox: OutboxItem[] = [
 
 export const pricing: Pricing = {
   baseFare: 400,
+  perKm: 140,
   perMinute: 25,
   minimumFare: 700,
   bookingFee: 100,
   cancellationFee: 300,
   waitPerMinute: 40,
-  commissionPercent: 15,
+  commissionPercent: 10,
   airportMultiplier: 1.35,
   nightMultiplier: 1.15,
   rainMultiplier: 1.2,
   intercityPerKm: 180,
+  distanceMode: "banded",
   bands: [
     { id: "b1", label: "First 3 km", upToKm: 3, perKm: 180 },
     { id: "b2", label: "3 to 10 km", upToKm: 10, perKm: 140 },
@@ -109,6 +130,7 @@ export const pricing: Pricing = {
     { id: "green", label: "Green", multiplier: 1.12 },
     { id: "moto", label: "Moto", multiplier: 0.62 },
     { id: "keke", label: "Keke", multiplier: 0.55 },
+    { id: "along", label: "Along", multiplier: 0.72 },
   ],
 };
 

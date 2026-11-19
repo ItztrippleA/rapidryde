@@ -13,6 +13,7 @@ export type Section =
   | "subscriptions"
   | "promos"
   | "notifications"
+  | "email"
   | "support"
   | "config"
   | "access";
@@ -30,6 +31,7 @@ export const sections: Section[] = [
   "subscriptions",
   "promos",
   "notifications",
+  "email",
   "support",
   "config",
   "access",
@@ -48,6 +50,7 @@ export const sectionLabel: Record<Section, string> = {
   subscriptions: "Subscriptions",
   promos: "Promos",
   notifications: "Notifications",
+  email: "Email",
   support: "Support chat",
   config: "Configuration",
   access: "Access",
@@ -70,8 +73,8 @@ export const grants: Record<StaffRole, { view: Section[]; edit: Section[] }> = {
     edit: ["drivers", "customers", "rides", "deliveries", "zones"],
   },
   support: {
-    view: ["dashboard", "analytics", "customers", "drivers", "map", "rides", "deliveries", "notifications", "support"],
-    edit: ["customers", "rides", "deliveries", "notifications", "support"],
+    view: ["dashboard", "analytics", "customers", "drivers", "map", "rides", "deliveries", "notifications", "email", "support"],
+    edit: ["customers", "rides", "deliveries", "notifications", "email", "support"],
   },
   finance: {
     view: ["dashboard", "analytics", "rides", "pricing", "subscriptions", "promos"],
