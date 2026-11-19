@@ -2,6 +2,8 @@
 
 import CloseIcon from "@mui/icons-material/Close";
 import DirectionsCarFilledOutlinedIcon from "@mui/icons-material/DirectionsCarFilledOutlined";
+import PersonIcon from "@mui/icons-material/Person";
+import PersonOutlinedIcon from "@mui/icons-material/PersonOutlined";
 import RouteOutlinedIcon from "@mui/icons-material/RouteOutlined";
 import Box from "@mui/material/Box";
 import Dialog from "@mui/material/Dialog";
@@ -9,6 +11,7 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import Typography from "@mui/material/Typography";
+import { useTheme } from "@mui/material/styles";
 import { Pill } from "@/components/ui/Chrome";
 import { naira, titleCase } from "@/lib/format";
 
@@ -54,8 +57,183 @@ export type PeekRide = {
   along?: boolean;
   poolId?: string;
   seatsTotal?: number;
-  riders?: Array<{ name: string; pickup: string; dropoff: string; fare: number }>;
+  riders?: Array<{
+    name: string;
+    pickup: string;
+    dropoff: string;
+    fare: number;
+    seatIndex?: number;
+    seatLabel?: string;
+  }>;
 };
+
+const CABIN_SLOTS = [
+  { id: "front", index: 0, short: "Front" },
+  { id: "rear_left", index: 1, short: "Rear L" },
+  { id: "rear_right", index: 2, short: "Rear R" },
+] as const;
+
+/** Mirrors customer `CabinPicker` — top-down car with driver + 3 passenger seats. */
+function CabinSeats({
+  riders,
+  seatsTotal = 3,
+  colour = "#5B7FA8",
+}: {
+  riders: NonNullable<PeekRide["riders"]>;
+  seatsTotal?: number;
+  colour?: string;
+}) {
+  const theme = useTheme();
+  const dark = theme.palette.mode === "dark";
+  const paper = dark ? "#1A160F" : "#F8F6EF";
+  const ink = dark ? "#F6F1E6" : "#1A160C";
+  const muted = dark ? "#A39888" : "#6B6256";
+  const line = dark ? "#3A3228" : "#D9D1C3";
+  const bySeat = new Map(riders.map((rider, index) => [rider.seatIndex ?? index + 1, rider]));
+  const slots = CABIN_SLOTS.slice(0, seatsTotal);
+
+  return (
+    <Box sx={{ mt: 0.5, mb: 1, display: "grid", justifyItems: "center", gap: 1.25 }}>
+      <Typography
+        sx={{
+          alignSelf: "stretch",
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "text.secondary",
+        }}
+      >
+        Cabin seats
+      </Typography>
+
+      <Box sx={{ position: "relative", width: 220, height: 280 }}>
+        <Box
+          component="svg"
+          viewBox="0 0 220 280"
+          sx={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+          aria-hidden
+        >
+          <ellipse cx="110" cy="268" rx="70" ry="8" fill="rgba(0,0,0,0.1)" />
+          <path
+            d="M48 54 C48 28, 70 14, 110 14 C150 14, 172 28, 172 54 L178 210 C178 242, 152 262, 110 262 C68 262, 42 242, 42 210 Z"
+            fill={colour}
+          />
+          <path d="M62 42 C78 28, 142 28, 158 42 L152 64 H68 Z" fill="rgba(215,232,245,0.9)" />
+          <path d="M56 210 L164 210 L158 246 C146 254, 74 254, 62 246 Z" fill="rgba(0,0,0,0.12)" />
+          <rect x="70" y="78" width="80" height="10" rx="4" fill="rgba(255,255,255,0.28)" />
+          <rect x="44" y="96" width="10" height="36" rx="4" fill="rgba(0,0,0,0.2)" />
+          <rect x="166" y="96" width="10" height="36" rx="4" fill="rgba(0,0,0,0.2)" />
+          <rect x="44" y="168" width="10" height="36" rx="4" fill="rgba(0,0,0,0.2)" />
+          <rect x="166" y="168" width="10" height="36" rx="4" fill="rgba(0,0,0,0.2)" />
+          <path d="M110 70 V250" stroke="rgba(255,255,255,0.18)" strokeWidth="2" strokeDasharray="4 6" />
+        </Box>
+
+        <Box sx={{ position: "absolute", top: 74, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 3.5 }}>
+          <CabinSeatChip
+            label="Driver"
+            state="driver"
+            ink="#F6E7C1"
+            fill="rgba(26,20,12,0.55)"
+            border="transparent"
+          />
+          <CabinSeatChip
+            label={bySeat.get(0)?.name.split(" ")[0] || "Front"}
+            state={bySeat.has(0) ? "taken" : "open"}
+            ink={bySeat.has(0) ? muted : ink}
+            fill={bySeat.has(0) ? "rgba(26,20,12,0.35)" : paper}
+            border={bySeat.has(0) ? "transparent" : line}
+          />
+        </Box>
+
+        <Box sx={{ position: "absolute", top: 168, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 3.5 }}>
+          {slots
+            .filter((slot) => slot.index > 0)
+            .map((slot) => {
+              const rider = bySeat.get(slot.index);
+              return (
+                <CabinSeatChip
+                  key={slot.id}
+                  label={rider ? rider.name.split(" ")[0] : slot.short}
+                  state={rider ? "taken" : "open"}
+                  ink={rider ? muted : ink}
+                  fill={rider ? "rgba(26,20,12,0.35)" : paper}
+                  border={rider ? "transparent" : line}
+                />
+              );
+            })}
+        </Box>
+      </Box>
+
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", justifyContent: "center" }}>
+        <Legend swatch="rgba(26,20,12,0.35)" label="Taken" />
+        <Legend swatch={paper} label="Open" border={line} />
+        <Legend swatch="rgba(26,20,12,0.55)" label="Driver" />
+      </Box>
+    </Box>
+  );
+}
+
+function CabinSeatChip({
+  label,
+  state,
+  ink,
+  fill,
+  border,
+}: {
+  label: string;
+  state: "driver" | "taken" | "open";
+  ink: string;
+  fill: string;
+  border: string;
+}) {
+  return (
+    <Box
+      sx={{
+        width: 56,
+        height: 56,
+        borderRadius: "14px",
+        bgcolor: fill,
+        border: state === "open" ? `1px solid ${border}` : `1px solid ${border}`,
+        display: "grid",
+        placeItems: "center",
+        gap: 0.15,
+        opacity: state === "taken" ? 0.85 : 1,
+      }}
+    >
+      {state === "open" ? (
+        <PersonOutlinedIcon sx={{ fontSize: 18, color: ink }} />
+      ) : (
+        <PersonIcon sx={{ fontSize: 18, color: ink }} />
+      )}
+      <Typography sx={{ color: ink, fontSize: 9, fontWeight: 800, lineHeight: 1.1 }}>
+        {state === "taken" ? "Taken" : label}
+      </Typography>
+      {state === "taken" ? (
+        <Typography sx={{ color: ink, fontSize: 8, fontWeight: 700, lineHeight: 1 }}>{label}</Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function Legend({ swatch, label, border }: { swatch: string; label: string; border?: string }) {
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+      <Box
+        sx={{
+          width: 14,
+          height: 14,
+          borderRadius: "4px",
+          bgcolor: swatch,
+          border: border ? `1px solid ${border}` : "none",
+        }}
+      />
+      <Typography color="text.secondary" sx={{ fontSize: 12, fontWeight: 700 }}>
+        {label}
+      </Typography>
+    </Box>
+  );
+}
 
 function statusTone(status: PeekDriver["status"]) {
   if (status === "on_trip") return "ok" as const;
@@ -188,6 +366,7 @@ export function DriverPeek({
                 <Row label="Pool" value={ride.poolId} />
                 {ride.riders && ride.riders.length > 0 ? (
                   <Box sx={{ mt: 0.5, mb: 0.5, display: "grid", gap: 1 }}>
+                    <CabinSeats riders={ride.riders} seatsTotal={ride.seatsTotal ?? 3} />
                     <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>
                       Riders in car
                     </Typography>
@@ -204,6 +383,7 @@ export function DriverPeek({
                       >
                         <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
                           {index + 1}. {rider.name}
+                          {rider.seatLabel ? ` · ${rider.seatLabel}` : ""}
                         </Typography>
                         <Typography color="text.secondary" sx={{ fontSize: 12 }}>
                           {rider.pickup} → {rider.dropoff}

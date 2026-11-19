@@ -66,8 +66,8 @@ export const rides: Ride[] = [
     poolId: "pool_garki_wuse",
     seatsTotal: 3,
     riders: [
-      { name: "Adaeze Nwosu", pickup: "Garki Hospital", dropoff: "Wuse 2", fare: 1600 },
-      { name: "Emeka Okafor", pickup: "Central Area", dropoff: "Wuse 2", fare: 1600 },
+      { name: "Adaeze Nwosu", pickup: "Garki Hospital", dropoff: "Wuse 2", fare: 1600, seatIndex: 1, seatLabel: "Rear left" },
+      { name: "Emeka Okafor", pickup: "Central Area", dropoff: "Wuse 2", fare: 1600, seatIndex: 2, seatLabel: "Rear right" },
     ],
   },
   { id: "r_2042", city: "abuja", customerId: "c_emeka", driverId: "d_ibrahim", classId: "comfort", pickup: "National Hospital", dropoff: "Jabi Lake Mall", distanceKm: 11.4, fare: 4800, status: "assigned", when: "Today, 09:02" },

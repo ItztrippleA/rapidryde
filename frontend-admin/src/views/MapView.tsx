@@ -24,6 +24,7 @@ import { adminLogin, api, hasApi } from "@/lib/api";
 import { fromGrid, inside, ring, toGrid } from "@/lib/geo";
 import { cityLabel, naira, titleCase } from "@/lib/format";
 import type { CityId } from "@/lib/types";
+import { rides as catalogRides } from "@/data/seed";
 import { useAdminStore } from "@/store/useAdminStore";
 
 type LiveDriver = {
@@ -311,12 +312,20 @@ export function MapView() {
           (item.status === "on_trip" || item.status === "assigned" || item.status === "searching"),
       );
       if (!match) return null;
+      const catalog = catalogRides.find((item) => item.id === match.id);
+      const along = Boolean(match.along || catalog?.along || match.classId === "along");
+      const riders =
+        match.riders && match.riders.length > 1
+          ? match.riders
+          : catalog?.riders && catalog.riders.length > 0
+            ? catalog.riders
+            : match.riders;
       const customer = seedCustomers.find((item) => item.id === match.customerId);
       return {
         id: match.id,
         status: match.status,
-        classId: match.classId,
-        classLabel: match.along ? "Along" : undefined,
+        classId: along ? "along" : match.classId,
+        classLabel: along ? "Along" : undefined,
         pickup: match.pickup,
         dropoff: match.dropoff,
         fare: match.fare,
@@ -324,10 +333,10 @@ export function MapView() {
         customerName: customer?.name,
         customerPhone: customer?.phone,
         when: match.when,
-        along: match.along,
-        poolId: match.poolId,
-        seatsTotal: match.seatsTotal,
-        riders: match.riders,
+        along,
+        poolId: match.poolId || catalog?.poolId,
+        seatsTotal: match.seatsTotal || catalog?.seatsTotal || 3,
+        riders,
       };
     },
     [seedCustomers, seedRides],
@@ -369,9 +378,22 @@ export function MapView() {
               ? ("busy" as const)
               : ("available" as const);
         const geo = fromGrid(city, driver.x, driver.y);
-        const poolRide = seedRides.find(
-          (ride) => ride.driverId === driver.id && ride.along && (ride.status === "on_trip" || ride.status === "assigned"),
-        );
+        const poolRide =
+          seedRides.find(
+            (ride) =>
+              ride.driverId === driver.id &&
+              (ride.along || ride.classId === "along") &&
+              (ride.status === "on_trip" || ride.status === "assigned"),
+          ) ||
+          catalogRides.find(
+            (ride) =>
+              ride.driverId === driver.id &&
+              ride.along &&
+              (ride.status === "on_trip" || ride.status === "assigned"),
+          );
+        const riders = poolRide?.riders?.length
+          ? poolRide.riders
+          : catalogRides.find((ride) => ride.id === poolRide?.id)?.riders;
         return {
           id: driver.id,
           name: driver.name,
@@ -382,8 +404,8 @@ export function MapView() {
           online: driver.online,
           status,
           heading: seedHeading(driver.id),
-          along: Boolean(poolRide?.along),
-          poolTaken: poolRide?.riders?.length ?? 0,
+          along: Boolean(poolRide?.along || poolRide?.classId === "along"),
+          poolTaken: riders?.length ?? 0,
           poolTotal: poolRide?.seatsTotal ?? 3,
         };
       });
@@ -562,7 +584,8 @@ export function MapView() {
       return;
     }
 
-    if (!hasApi() || source === "seed") {
+    // Prefer seed Along / pool detail (multi-rider + seats) over incomplete live payloads.
+    if (!hasApi() || source === "seed" || (seedRide?.along && (seedRide.riders?.length ?? 0) > 1)) {
       setRide(seedRide);
       setRideLoading(false);
       return;
@@ -574,7 +597,14 @@ export function MapView() {
       try {
         const { token } = await adminLogin();
         const remote = await api<ApiRide>(`/rides/${rideId}`, { token });
-        if (!cancelled) setRide(mapApiRide(remote));
+        if (!cancelled) {
+          const mapped = mapApiRide(remote);
+          if (seedRide?.along && (seedRide.riders?.length ?? 0) > (mapped.riders?.length ?? 0)) {
+            setRide(seedRide);
+          } else {
+            setRide(mapped);
+          }
+        }
       } catch {
         if (!cancelled) setRide(seedRide);
       } finally {

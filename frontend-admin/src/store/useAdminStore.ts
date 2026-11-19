@@ -184,6 +184,7 @@ export const useAdminStore = create<AdminState>()(
         const saved = (persisted ?? {}) as Partial<Data>;
         const seedSpend = new Map(current.customers.map((customer) => [customer.id, customer.rideSpend]));
         const seedPassword = new Map(current.staff.map((member) => [member.id, member.password]));
+        const seedRides = new Map(current.rides.map((ride) => [ride.id, ride]));
         const customers = (saved.customers ?? current.customers).map((customer) => ({
           ...customer,
           rideSpend: customer.rideSpend ?? seedSpend.get(customer.id) ?? 0,
@@ -193,7 +194,23 @@ export const useAdminStore = create<AdminState>()(
           ...member,
           password: member.password || seedPassword.get(member.id) || "",
         }));
-        return { ...current, ...saved, chats: saved.chats ?? current.chats, customers, drivers, staff };
+        // Refresh Along / pool fields when localStorage still has the older single-rider ride.
+        const rides = (saved.rides ?? current.rides).map((ride) => {
+          const fresh = seedRides.get(ride.id);
+          if (!fresh) return ride;
+          if (fresh.along && (!ride.riders?.length || ride.riders.length < (fresh.riders?.length ?? 0))) {
+            return { ...ride, ...fresh };
+          }
+          return {
+            ...ride,
+            along: ride.along ?? fresh.along,
+            poolId: ride.poolId ?? fresh.poolId,
+            seatsTotal: ride.seatsTotal ?? fresh.seatsTotal,
+            riders: ride.riders?.length ? ride.riders : fresh.riders,
+            classId: ride.classId === "ryde" && fresh.along ? fresh.classId : ride.classId,
+          };
+        });
+        return { ...current, ...saved, chats: saved.chats ?? current.chats, customers, drivers, staff, rides };
       },
     },
   ),

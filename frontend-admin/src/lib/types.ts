@@ -118,6 +118,9 @@ export interface PoolRider {
   pickup: string;
   dropoff: string;
   fare: number;
+  /** 0 = front passenger, 1 = rear left, 2 = rear right */
+  seatIndex?: number;
+  seatLabel?: string;
 }
 
 export interface Ride {
