@@ -8,6 +8,7 @@ import { PlacesModule } from './places/places.module';
 import { PricingModule } from './pricing/pricing.module';
 import { QueueModule } from './queue/queue.module';
 import { RidesModule } from './rides/rides.module';
+import { RoutingModule } from './routing/routing.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { StorageModule } from './storage/storage.module';
 import { UsersModule } from './users/users.module';
@@ -27,6 +28,7 @@ import { HealthController } from './health.controller';
     RidesModule,
     PartnersModule,
     PlacesModule,
+    RoutingModule,
   ],
   controllers: [HealthController],
 })

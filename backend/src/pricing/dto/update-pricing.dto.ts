@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsNumber,
   IsOptional,
@@ -40,6 +41,90 @@ class ClassDto {
   @Min(0.1)
   @Max(10)
   multiplier!: number;
+}
+
+class OpsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  maxStops?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  minorDetourMeters?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  moderateDetourMeters?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  freeWaitMinutes?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  waitWarningMinutes?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  waitGraceMinutes?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  waitAppliesToPickup?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  waitAppliesToStops?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  arrivalGeofenceMeters?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  trafficCompMinDelayMinutes?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  trafficCompPerMinute?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  trafficCompMaxPerTrip?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  trafficCompClassIds?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  trafficCompCities?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  chargePassengerForTraffic?: boolean;
 }
 
 export class UpdatePricingDto {
@@ -131,4 +216,9 @@ export class UpdatePricingDto {
   @ValidateNested({ each: true })
   @Type(() => ClassDto)
   classes?: ClassDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => OpsDto)
+  ops?: OpsDto;
 }

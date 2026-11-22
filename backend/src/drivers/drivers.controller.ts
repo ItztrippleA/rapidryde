@@ -60,6 +60,31 @@ class PresenceDto {
   @Min(3)
   @Max(50)
   effectiveRadiusKm?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  destinationEnabled?: boolean;
+
+  @IsOptional()
+  @IsString()
+  destinationLabel?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  destinationLat?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  destinationLng?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(2)
+  @Max(30)
+  destinationRadiusKm?: number;
 }
 
 class PreferencesDto {
@@ -80,6 +105,31 @@ class PreferencesDto {
   @Min(3)
   @Max(50)
   effectiveRadiusKm?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  destinationEnabled?: boolean;
+
+  @IsOptional()
+  @IsString()
+  destinationLabel?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  destinationLat?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  destinationLng?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(2)
+  @Max(30)
+  destinationRadiusKm?: number;
 }
 
 class ExtendRangeDto {

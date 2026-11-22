@@ -7,6 +7,9 @@ import {
 import { DriversService } from '../drivers/drivers.service';
 import { PricingService } from '../pricing/pricing.service';
 import { JobsService } from '../queue/jobs.service';
+import { RoutingService } from '../routing/routing.service';
+import { makeCharge } from './trip-charges';
+import { WaitingService } from './waiting.service';
 import { SchedulerService } from '../scheduler/scheduler.service';
 import { PgStore } from '../storage/pg-store';
 import {
@@ -57,13 +60,28 @@ export class RidesService {
     private readonly jobs: JobsService,
     private readonly drivers: DriversService,
     private readonly scheduler: SchedulerService,
+    private readonly routing: RoutingService,
+    private readonly waiting: WaitingService,
   ) {}
 
   async create(input: CreateRideInput) {
+    const waypoints = (input.stops || []).map((stop) => ({
+      latitude: stop.latitude,
+      longitude: stop.longitude,
+    }));
+    const routed = await this.routing.route(
+      { latitude: input.pickupLat, longitude: input.pickupLng },
+      { latitude: input.dropLat, longitude: input.dropLng },
+      waypoints,
+      'TRAFFIC_AWARE',
+    );
+    const km = routed.km || input.km;
+    const minutes = routed.minutes || input.minutes;
+
     const factors = await this.pricing.getFactors();
     const quote = await this.pricing.quote({
-      km: input.km,
-      minutes: input.minutes,
+      km,
+      minutes,
       classId: input.classId,
       promoCode: input.promoCode,
     });
@@ -107,8 +125,27 @@ export class RidesService {
         longitude: input.dropLng,
       },
       stops: input.stops || [],
-      plannedKm: quote.km,
-      plannedMinutes: quote.minutes,
+      plannedKm: km,
+      plannedMinutes: minutes,
+      routeBaseline: {
+        km: routed.km,
+        staticMinutes: routed.staticMinutes,
+        trafficMinutes: routed.trafficMinutes,
+        trafficDelaySec: routed.trafficDelaySec,
+        delayPercentage: routed.delayPercentage,
+        isTrafficHeavy: routed.isTrafficHeavy,
+        source: routed.source,
+        computedAt: routed.computedAt,
+      },
+      charges: [
+        makeCharge({
+          kind: 'base',
+          amount: fare,
+          idempotencyKey: `base_${now.toString(36)}`,
+          note: 'Initial quote',
+          at: now,
+        }),
+      ],
       quoted: quote.fare,
       fare,
       earnings,
@@ -163,7 +200,7 @@ export class RidesService {
       props: { rideId: ride.id, fare, classId, customerId: input.customerId },
     });
 
-    return { ride, quote };
+    return { ride, quote, traffic: routed };
   }
 
   /** Open or join an Along / batch pool */
@@ -419,6 +456,43 @@ export class RidesService {
       }
     }
 
+    if (status === 'arrived') {
+      try {
+        const started = await this.waiting.start(id, 'pickup', {
+          latitude: next.driverLocation?.latitude,
+          longitude: next.driverLocation?.longitude,
+          silent: true,
+        });
+        next.waitingSessions = started.ride.waitingSessions;
+      } catch {
+        /* geofence / policy — stage still succeeds */
+      }
+    }
+    if (status === 'on_trip') {
+      try {
+        const ended = await this.waiting.end(id);
+        next.fare = ended.ride.fare;
+        next.earnings = ended.ride.earnings;
+        next.charges = ended.ride.charges;
+        next.waitingSessions = ended.ride.waitingSessions;
+        next.fareHistory = ended.ride.fareHistory;
+      } catch {
+        /* no active session */
+      }
+    }
+    if (
+      status === 'cancelled' ||
+      status === 'timeout' ||
+      status === 'no_drivers'
+    ) {
+      try {
+        const cancelled = await this.waiting.cancelOpen(id);
+        next.waitingSessions = cancelled.waitingSessions;
+      } catch {
+        /* ignore */
+      }
+    }
+
     if (status === 'completed') {
       void this.jobs.enqueue('ledger.settle', { rideId: id });
       const customer = await this.store.findUserById(next.customerId);
@@ -430,10 +504,25 @@ export class RidesService {
         });
       }
     }
+    const factors = await this.pricing.getFactors();
+    const freeWait = factors.ops.freeWaitMinutes;
+    const embarking = status === 'to_pickup';
     void this.jobs.enqueue('notify.push', {
       userIds: [next.customerId, ...(next.driverId ? [next.driverId] : [])],
-      title: 'Trip update',
-      body: status,
+      title: embarking
+        ? 'Driver on the way'
+        : status === 'arrived'
+          ? 'Driver has arrived'
+          : status === 'on_trip'
+            ? 'Trip started'
+            : 'Trip update',
+      body: embarking
+        ? 'Your driver is heading to pickup.'
+        : status === 'arrived'
+          ? `Your driver has arrived. You have ${freeWait} minutes of free waiting time before additional charges apply.`
+          : status === 'on_trip'
+            ? 'You are on the trip.'
+            : status,
       data: { rideId: id, stage: status },
     });
     return next;

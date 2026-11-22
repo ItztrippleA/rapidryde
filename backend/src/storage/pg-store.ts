@@ -64,6 +64,16 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS lga TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS identity JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS public_code TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS nin_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS users_public_code_uidx ON users (public_code) WHERE public_code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_nin_hash_uidx ON users (nin_hash) WHERE nin_hash IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS app_kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS otps (
   phone TEXT NOT NULL,
@@ -108,7 +118,12 @@ CREATE TABLE IF NOT EXISTS driver_presence (
   last_seen_at BIGINT NOT NULL,
   max_dispatch_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10,
   expand_radius_when_idle BOOLEAN NOT NULL DEFAULT FALSE,
-  effective_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10
+  effective_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10,
+  destination_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  destination_label TEXT,
+  destination_lat DOUBLE PRECISION,
+  destination_lng DOUBLE PRECISION,
+  destination_radius_km DOUBLE PRECISION NOT NULL DEFAULT 8
 );
 CREATE INDEX IF NOT EXISTS driver_presence_status_idx ON driver_presence (status);
 CREATE INDEX IF NOT EXISTS driver_presence_city_idx ON driver_presence (city);
@@ -116,6 +131,11 @@ CREATE INDEX IF NOT EXISTS driver_presence_online_idx ON driver_presence (online
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS max_dispatch_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS expand_radius_when_idle BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS effective_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_label TEXT;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_lat DOUBLE PRECISION;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_lng DOUBLE PRECISION;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_radius_km DOUBLE PRECISION NOT NULL DEFAULT 8;
 
 CREATE TABLE IF NOT EXISTS ride_pools (
   id TEXT PRIMARY KEY,
@@ -328,10 +348,50 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       city: row.city || undefined,
       lga: row.lga || undefined,
       identity: (row.identity as StoredUser['identity']) || {},
+      ninHash: row.nin_hash || undefined,
+      publicCode: row.public_code || undefined,
       status: row.status,
       createdAt: Number(row.created_at),
       updatedAt: row.updated_at ? Number(row.updated_at) : undefined,
     };
+  }
+
+  async publicCodeTaken(code: string) {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM users WHERE public_code = $1 LIMIT 1`,
+      [code],
+    );
+    return rows.length > 0;
+  }
+
+  /** Another account already claimed this NIN fingerprint. */
+  async findUserByNinHash(ninHash: string, excludeUserId?: string) {
+    const { rows } = excludeUserId
+      ? await this.pool.query(
+          `SELECT * FROM users WHERE nin_hash = $1 AND id <> $2 LIMIT 1`,
+          [ninHash, excludeUserId],
+        )
+      : await this.pool.query(
+          `SELECT * FROM users WHERE nin_hash = $1 LIMIT 1`,
+          [ninHash],
+        );
+    return rows[0] ? this.mapUser(rows[0]) : null;
+  }
+
+  async getKv(key: string) {
+    const { rows } = await this.pool.query(
+      `SELECT value FROM app_kv WHERE key = $1 LIMIT 1`,
+      [key],
+    );
+    return rows[0]?.value ? String(rows[0].value) : null;
+  }
+
+  async setKv(key: string, value: string) {
+    await this.pool.query(
+      `INSERT INTO app_kv (key, value, updated_at) VALUES ($1,$2,$3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
+      [key, value, Date.now()],
+    );
   }
 
   async findUserById(id: string) {
@@ -407,9 +467,9 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       `INSERT INTO users (
          id, role, phone, email, google_id, password_hash, name,
          first_name, last_name, middle_name, referral, photo_url,
-         dob, gender, address, state, city, lga, identity, status, created_at, updated_at
+         dob, gender, address, state, city, lga, identity, nin_hash, public_code, status, created_at, updated_at
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
        )
        ON CONFLICT (id) DO UPDATE SET
          role = EXCLUDED.role,
@@ -430,6 +490,8 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          city = EXCLUDED.city,
          lga = EXCLUDED.lga,
          identity = COALESCE(EXCLUDED.identity, users.identity),
+         nin_hash = COALESCE(EXCLUDED.nin_hash, users.nin_hash),
+         public_code = COALESCE(EXCLUDED.public_code, users.public_code),
          status = EXCLUDED.status,
          updated_at = EXCLUDED.updated_at`,
       [
@@ -452,6 +514,8 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         user.city || null,
         user.lga || null,
         JSON.stringify(user.identity || {}),
+        user.ninHash || null,
+        user.publicCode || null,
         user.status,
         user.createdAt,
         updatedAt,
@@ -609,7 +673,23 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     const { rows } = await this.pool.query(
       `SELECT factors FROM pricing WHERE id = 'default'`,
     );
-    return { ...DEFAULT_FARE_FACTORS, ...(rows[0]?.factors || {}) };
+    const raw = (rows[0]?.factors || {}) as Partial<FareFactors>;
+    return {
+      ...DEFAULT_FARE_FACTORS,
+      ...raw,
+      bands: raw.bands ?? DEFAULT_FARE_FACTORS.bands,
+      classes: raw.classes ?? DEFAULT_FARE_FACTORS.classes,
+      ops: {
+        ...DEFAULT_FARE_FACTORS.ops,
+        ...(raw.ops || {}),
+        trafficCompClassIds:
+          raw.ops?.trafficCompClassIds ??
+          DEFAULT_FARE_FACTORS.ops.trafficCompClassIds,
+        trafficCompCities:
+          raw.ops?.trafficCompCities ??
+          DEFAULT_FARE_FACTORS.ops.trafficCompCities,
+      },
+    };
   }
 
   async setPricing(factors: FareFactors) {
@@ -816,6 +896,11 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     maxDispatchRadiusKm?: number | null;
     expandRadiusWhenIdle?: boolean | null;
     effectiveRadiusKm?: number | null;
+    destinationEnabled?: boolean | null;
+    destinationLabel?: string | null;
+    destinationLat?: number | null;
+    destinationLng?: number | null;
+    destinationRadiusKm?: number | null;
   }) {
     const now = Date.now();
     const current = await this.getPresence(row.driverId);
@@ -825,11 +910,31 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       row.expandRadiusWhenIdle ?? current?.expandRadiusWhenIdle ?? false;
     const effective =
       row.effectiveRadiusKm ?? current?.effectiveRadiusKm ?? maxKm;
+    const destinationEnabled =
+      row.destinationEnabled ?? current?.destinationEnabled ?? false;
+    const destinationLabel = destinationEnabled
+      ? (row.destinationLabel !== undefined
+          ? row.destinationLabel
+          : (current?.destinationLabel ?? null))
+      : null;
+    const destinationLat = destinationEnabled
+      ? (row.destinationLat !== undefined
+          ? row.destinationLat
+          : (current?.destinationLat ?? null))
+      : null;
+    const destinationLng = destinationEnabled
+      ? (row.destinationLng !== undefined
+          ? row.destinationLng
+          : (current?.destinationLng ?? null))
+      : null;
+    const destinationRadiusKm =
+      row.destinationRadiusKm ?? current?.destinationRadiusKm ?? 8;
     await this.pool.query(
       `INSERT INTO driver_presence (
          driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at,
-         max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km,
+         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        ON CONFLICT (driver_id) DO UPDATE SET
          status = EXCLUDED.status,
          city = COALESCE(EXCLUDED.city, driver_presence.city),
@@ -842,7 +947,12 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          last_seen_at = EXCLUDED.last_seen_at,
          max_dispatch_radius_km = EXCLUDED.max_dispatch_radius_km,
          expand_radius_when_idle = EXCLUDED.expand_radius_when_idle,
-         effective_radius_km = EXCLUDED.effective_radius_km`,
+         effective_radius_km = EXCLUDED.effective_radius_km,
+         destination_enabled = EXCLUDED.destination_enabled,
+         destination_label = EXCLUDED.destination_label,
+         destination_lat = EXCLUDED.destination_lat,
+         destination_lng = EXCLUDED.destination_lng,
+         destination_radius_km = EXCLUDED.destination_radius_km`,
       [
         row.driverId,
         row.status,
@@ -857,6 +967,11 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         maxKm,
         expand,
         effective,
+        destinationEnabled,
+        destinationLabel,
+        destinationLat,
+        destinationLng,
+        destinationRadiusKm,
       ],
     );
     return this.getPresence(row.driverId);
@@ -953,6 +1068,16 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
           : row.max_dispatch_radius_km != null
             ? Number(row.max_dispatch_radius_km)
             : 10,
+      destinationEnabled: Boolean(row.destination_enabled),
+      destinationLabel: (row.destination_label as string) || null,
+      destinationLat:
+        row.destination_lat != null ? Number(row.destination_lat) : null,
+      destinationLng:
+        row.destination_lng != null ? Number(row.destination_lng) : null,
+      destinationRadiusKm:
+        row.destination_radius_km != null
+          ? Number(row.destination_radius_km)
+          : 8,
     };
   }
 

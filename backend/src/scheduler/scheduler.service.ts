@@ -122,6 +122,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     if (kind.includes('15m')) return 'Trip in 15 minutes';
     if (kind.includes('5m')) return 'Trip starting soon';
     if (kind === 'pool_ready') return 'Your shared ride is filling up';
+    if (kind === 'waiting_warning') return 'Free waiting almost over';
+    if (kind === 'waiting_free_expired') return 'Free waiting has ended';
     return 'Rapyd Ryd reminder';
   }
 
@@ -130,12 +132,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       typeof payload.rideId === 'string' || typeof payload.rideId === 'number'
         ? String(payload.rideId)
         : '';
+    const waitPerMinute =
+      typeof payload.waitPerMinute === 'number' ? payload.waitPerMinute : 40;
+    const remaining =
+      typeof payload.remainingMinutes === 'number'
+        ? payload.remainingMinutes
+        : 2;
     if (kind.includes('60m'))
       return `Your scheduled Rapyd Ryd trip ${rideId} is in about an hour.`;
     if (kind.includes('15m'))
       return `Your scheduled trip ${rideId} is in 15 minutes. Be ready.`;
     if (kind.includes('5m'))
       return `Your trip ${rideId} starts in about 5 minutes.`;
+    if (kind === 'waiting_warning') {
+      return `Your free waiting time is almost over. You have ${remaining} minutes remaining before additional waiting charges begin.`;
+    }
+    if (kind === 'waiting_free_expired') {
+      return `Your free waiting time has ended. Additional waiting charges will now apply at ₦${waitPerMinute} per minute.`;
+    }
     return `Reminder for ${rideId || 'your trip'}.`;
   }
 }

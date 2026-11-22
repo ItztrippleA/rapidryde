@@ -13,6 +13,12 @@ export type UserIdentity = {
   status?: 'empty' | 'pending' | 'approved' | 'rejected';
   failureReason?: string;
   consented?: boolean;
+  /** Dojah selfie match score 0–100 when provider is dojah. */
+  matchConfidence?: number;
+  provider?: 'dojah' | 'manual' | string;
+  /** Dojah enrolled face id (1:N collection). */
+  faceId?: string;
+  verifiedAt?: number;
   updatedAt?: number;
 };
 
@@ -36,6 +42,10 @@ export type StoredUser = {
   city?: string;
   lga?: string;
   identity?: UserIdentity;
+  /** SHA-256 of NIN + pepper. Unique across accounts when set. */
+  ninHash?: string;
+  /** Public account code: drivers RRD-3456, customers RR-2342. */
+  publicCode?: string;
   status: 'active' | 'pending' | 'suspended' | 'closed' | 'under_review';
   createdAt: number;
   updatedAt?: number;

@@ -1,7 +1,9 @@
 import {
   DEFAULT_FARE_FACTORS,
+  DEFAULT_OPS_POLICY,
   type FareBreakdown,
   type FareFactors,
+  type OpsPolicy,
   type QuoteInput,
 } from './fare.types';
 
@@ -132,9 +134,33 @@ export function calculateFare(
   };
 }
 
+export function mergeOps(
+  current: OpsPolicy = DEFAULT_OPS_POLICY,
+  patch?: Partial<OpsPolicy>,
+): OpsPolicy {
+  if (!patch) return { ...DEFAULT_OPS_POLICY, ...current };
+  return {
+    ...DEFAULT_OPS_POLICY,
+    ...current,
+    ...patch,
+    trafficCompClassIds:
+      patch.trafficCompClassIds ??
+      current.trafficCompClassIds ??
+      DEFAULT_OPS_POLICY.trafficCompClassIds,
+    trafficCompCities:
+      patch.trafficCompCities ??
+      current.trafficCompCities ??
+      DEFAULT_OPS_POLICY.trafficCompCities,
+  };
+}
+
+export type FareFactorsPatch = Partial<Omit<FareFactors, 'ops'>> & {
+  ops?: Partial<OpsPolicy>;
+};
+
 export function mergeFactors(
   current: FareFactors,
-  patch: Partial<FareFactors>,
+  patch: FareFactorsPatch,
 ): FareFactors {
   return {
     ...current,
@@ -142,5 +168,32 @@ export function mergeFactors(
     bands: patch.bands ?? current.bands,
     classes: patch.classes ?? current.classes,
     distanceMode: patch.distanceMode ?? current.distanceMode,
+    ops: mergeOps(current.ops || DEFAULT_OPS_POLICY, patch.ops),
   };
+}
+
+/** Extra fare for additional driving distance/time (stop detour). */
+export function additionalStopFare(
+  additionalKm: number,
+  additionalMinutes: number,
+  factors: FareFactors,
+  classId?: string,
+) {
+  const multiplier =
+    factors.classes.find((item) => item.id === (classId || 'ryde'))
+      ?.multiplier ?? 1;
+  const distance = Math.max(0, additionalKm) * factors.perKm;
+  const time = Math.max(0, additionalMinutes) * factors.perMinute;
+  return Math.max(0, Math.round((distance + time) * multiplier));
+}
+
+export function classifyDetour(
+  additionalMeters: number,
+  ops: OpsPolicy = DEFAULT_OPS_POLICY,
+): 'none' | 'minor' | 'moderate' | 'significant' {
+  const meters = Math.max(0, additionalMeters);
+  if (meters <= 0) return 'none';
+  if (meters <= ops.minorDetourMeters) return 'minor';
+  if (meters <= ops.moderateDetourMeters) return 'moderate';
+  return 'significant';
 }

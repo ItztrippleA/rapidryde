@@ -3,10 +3,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { kmBetween } from '../lib/geo';
+import { alongDestination, kmBetween } from '../lib/geo';
 import { PgStore } from '../storage/pg-store';
 
 export type DriverDutyStatus = 'offline' | 'available' | 'on_trip' | 'busy';
+
+type DestinationPrefs = {
+  destinationEnabled?: boolean;
+  destinationLabel?: string | null;
+  destinationLat?: number | null;
+  destinationLng?: number | null;
+  destinationRadiusKm?: number | null;
+};
 
 @Injectable()
 export class DriversService {
@@ -22,7 +30,7 @@ export class DriversService {
       maxDispatchRadiusKm?: number;
       expandRadiusWhenIdle?: boolean;
       effectiveRadiusKm?: number;
-    },
+    } & DestinationPrefs,
   ) {
     return this.store.upsertPresence({
       driverId,
@@ -37,6 +45,11 @@ export class DriversService {
       maxDispatchRadiusKm: body.maxDispatchRadiusKm,
       expandRadiusWhenIdle: body.expandRadiusWhenIdle,
       effectiveRadiusKm: body.effectiveRadiusKm ?? body.maxDispatchRadiusKm,
+      destinationEnabled: body.destinationEnabled,
+      destinationLabel: body.destinationLabel,
+      destinationLat: body.destinationLat,
+      destinationLng: body.destinationLng,
+      destinationRadiusKm: body.destinationRadiusKm,
     });
   }
 
@@ -46,7 +59,7 @@ export class DriversService {
       maxDispatchRadiusKm?: number;
       expandRadiusWhenIdle?: boolean;
       effectiveRadiusKm?: number;
-    },
+    } & DestinationPrefs,
   ) {
     const current = await this.store.getPresence(driverId);
     return this.store.upsertPresence({
@@ -62,6 +75,11 @@ export class DriversService {
       maxDispatchRadiusKm: body.maxDispatchRadiusKm,
       expandRadiusWhenIdle: body.expandRadiusWhenIdle,
       effectiveRadiusKm: body.effectiveRadiusKm ?? body.maxDispatchRadiusKm,
+      destinationEnabled: body.destinationEnabled,
+      destinationLabel: body.destinationLabel,
+      destinationLat: body.destinationLat,
+      destinationLng: body.destinationLng,
+      destinationRadiusKm: body.destinationRadiusKm,
     });
   }
 
@@ -186,6 +204,10 @@ export class DriversService {
                 at: ride.updatedAt || ride.createdAt,
                 source: 'pickup' as const,
               };
+        const drop = {
+          latitude: ride.dropoff.latitude,
+          longitude: ride.dropoff.longitude,
+        };
         const nearby = available
           .map((driver) => {
             const km = kmBetween(
@@ -199,6 +221,30 @@ export class DriversService {
               driver.effectiveRadiusKm ?? driver.maxDispatchRadiusKm ?? 10,
             );
             const rounded = Math.round(km * 10) / 10;
+            const inRange = rounded <= radius + 0.05;
+            const destOn = Boolean(driver.destinationEnabled);
+            const destReady =
+              destOn &&
+              driver.destinationLat != null &&
+              driver.destinationLng != null &&
+              Number.isFinite(driver.destinationLat) &&
+              Number.isFinite(driver.destinationLng);
+            const alongRoute = destReady
+              ? alongDestination(
+                  {
+                    latitude: pickup.latitude,
+                    longitude: pickup.longitude,
+                  },
+                  drop,
+                  {
+                    latitude: driver.destinationLat!,
+                    longitude: driver.destinationLng!,
+                  },
+                  {
+                    nearKm: Number(driver.destinationRadiusKm ?? 8),
+                  },
+                )
+              : true;
             return {
               driverId: driver.driverId,
               name: driver.name,
@@ -208,11 +254,17 @@ export class DriversService {
               km: rounded,
               maxDispatchRadiusKm: Number(driver.maxDispatchRadiusKm ?? 10),
               effectiveRadiusKm: radius,
-              canSee: rounded <= radius + 0.05,
+              destinationEnabled: destOn,
+              destinationLabel: driver.destinationLabel ?? null,
+              alongRoute,
+              canSee: inRange && alongRoute,
               shortfallKm: Math.max(0, Math.ceil(rounded - radius)),
             };
           })
-          .sort((a, b) => a.km - b.km)
+          .sort((a, b) => {
+            if (a.canSee !== b.canSee) return a.canSee ? -1 : 1;
+            return a.km - b.km;
+          })
           .slice(0, 5);
 
         const closest = nearby[0] ?? null;
@@ -226,7 +278,11 @@ export class DriversService {
             longitude: pickup.longitude,
           },
           position: livePoint,
-          dropoff: { label: ride.dropoff.label },
+          dropoff: {
+            label: ride.dropoff.label,
+            latitude: drop.latitude,
+            longitude: drop.longitude,
+          },
           classLabel: ride.classLabel,
           fare: ride.fare,
           createdAt: ride.createdAt,

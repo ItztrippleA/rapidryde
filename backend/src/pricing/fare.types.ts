@@ -15,6 +15,34 @@ export type ClassRate = {
   multiplier: number;
 };
 
+/** Admin-editable route / waiting / traffic compensation policy. */
+export type OpsPolicy = {
+  /** Max intermediate stops on a trip (booking + mid-trip). */
+  maxStops: number;
+  /** Detour thresholds vs original driving route (metres). */
+  minorDetourMeters: number;
+  moderateDetourMeters: number;
+  /** Free waiting minutes before charges. */
+  freeWaitMinutes: number;
+  /** Send warning this many minutes after arrival. */
+  waitWarningMinutes: number;
+  /** Extra minutes after free wait before billing starts. */
+  waitGraceMinutes: number;
+  waitAppliesToPickup: boolean;
+  waitAppliesToStops: boolean;
+  /** Driver must be within this distance to start waiting. */
+  arrivalGeofenceMeters: number;
+  /** Unexpected traffic compensation (driver ledger, not auto passenger debit). */
+  trafficCompMinDelayMinutes: number;
+  trafficCompPerMinute: number;
+  trafficCompMaxPerTrip: number;
+  /** Empty = all classes / cities. */
+  trafficCompClassIds: string[];
+  trafficCompCities: string[];
+  /** Never auto-bill riders for traffic unless explicitly enabled. */
+  chargePassengerForTraffic: boolean;
+};
+
 export type FareFactors = {
   /** B — base fare in naira */
   baseFare: number;
@@ -39,6 +67,7 @@ export type FareFactors = {
   distanceMode: DistanceMode;
   bands: DistanceBand[];
   classes: ClassRate[];
+  ops: OpsPolicy;
 };
 
 export type QuoteInput = {
@@ -82,6 +111,24 @@ export type FareBreakdown = {
   classId: string;
 };
 
+export const DEFAULT_OPS_POLICY: OpsPolicy = {
+  maxStops: 2,
+  minorDetourMeters: 500,
+  moderateDetourMeters: 1000,
+  freeWaitMinutes: 10,
+  waitWarningMinutes: 8,
+  waitGraceMinutes: 0,
+  waitAppliesToPickup: true,
+  waitAppliesToStops: true,
+  arrivalGeofenceMeters: 120,
+  trafficCompMinDelayMinutes: 10,
+  trafficCompPerMinute: 20,
+  trafficCompMaxPerTrip: 2000,
+  trafficCompClassIds: [],
+  trafficCompCities: [],
+  chargePassengerForTraffic: false,
+};
+
 export const DEFAULT_FARE_FACTORS: FareFactors = {
   baseFare: 400,
   perKm: 140,
@@ -110,4 +157,5 @@ export const DEFAULT_FARE_FACTORS: FareFactors = {
     { id: 'green', label: 'Green', multiplier: 1.12 },
     { id: 'keke', label: 'Keke', multiplier: 0.55 },
   ],
+  ops: DEFAULT_OPS_POLICY,
 };

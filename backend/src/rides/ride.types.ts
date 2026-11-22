@@ -1,5 +1,14 @@
 /** Full ride session kept for ops, receipts, disputes, and relaunch. */
 
+import type {
+  DriverCompensation,
+  PendingStopProposal,
+  RouteSnapshot,
+  TrafficObservation,
+  TripCharge,
+  WaitingSession,
+} from './trip-ops.types';
+
 export type RideStatus =
   | 'searching'
   | 'assigned'
@@ -97,6 +106,16 @@ export type RideSession = {
   actualKm: number | null;
   actualMinutes: number | null;
 
+  /** Traffic-aware baseline captured at trip start / request. */
+  routeBaseline: RouteSnapshot | null;
+  /** Passenger-proposed mid-trip stop awaiting fare confirmation. */
+  pendingStop: PendingStopProposal | null;
+  /** Server-authoritative charge ledger (waiting, detours, etc.). */
+  charges: TripCharge[];
+  waitingSessions: WaitingSession[];
+  trafficObservations: TrafficObservation[];
+  compensations: DriverCompensation[];
+
   quoted: number;
   fare: number;
   earnings: number;
@@ -170,6 +189,16 @@ export function normalizeRide(
     plannedMinutes: raw.plannedMinutes ?? legacy.minutes ?? 0,
     actualKm: raw.actualKm ?? null,
     actualMinutes: raw.actualMinutes ?? null,
+    routeBaseline: raw.routeBaseline ?? null,
+    pendingStop: raw.pendingStop ?? null,
+    charges: Array.isArray(raw.charges) ? raw.charges : [],
+    waitingSessions: Array.isArray(raw.waitingSessions)
+      ? raw.waitingSessions
+      : [],
+    trafficObservations: Array.isArray(raw.trafficObservations)
+      ? raw.trafficObservations
+      : [],
+    compensations: Array.isArray(raw.compensations) ? raw.compensations : [],
     quoted: raw.quoted ?? 0,
     fare: raw.fare ?? 0,
     earnings: raw.earnings ?? 0,

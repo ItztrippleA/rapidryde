@@ -4,20 +4,34 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtPayload } from '../auth/auth.types';
 import { JobsService } from '../queue/jobs.service';
+import { KycService } from './kyc.service';
 
 class NinDto {
   @IsString()
   nin!: string;
 
+  /** Base64 selfie (optional in development). */
+  @IsOptional()
+  @IsString()
+  selfieImage?: string;
+
   @IsOptional()
   @IsBoolean()
   slipAttached?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(50)
+  @Max(100)
+  threshold?: number;
 }
 
 class ResolveDto {
@@ -42,25 +56,24 @@ class FundDto {
 
 /**
  * Partner-facing routes from the mobile contract.
- * External verification / payouts always go through the queue.
+ * NIN + face runs live via Dojah (no raw NIN/selfie stored). Bank/BVN still enqueue.
  */
 @Controller()
 export class PartnersController {
-  constructor(private readonly jobs: JobsService) {}
+  constructor(
+    private readonly jobs: JobsService,
+    private readonly kyc: KycService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('kyc/nin')
   async nin(@Req() req: { user: JwtPayload }, @Body() body: NinDto) {
-    await this.jobs.enqueue('kyc.verify', {
-      userId: req.user.sub,
-      kind: 'nin',
-      payload: {
-        nin: body.nin,
-        slipAttached: String(Boolean(body.slipAttached)),
-      },
+    return this.kyc.verifyNin(req.user.sub, {
+      nin: body.nin,
+      selfieImage: body.selfieImage,
+      slipAttached: body.slipAttached,
+      threshold: body.threshold,
     });
-    const tail = body.nin.slice(-4);
-    return { status: 'pending', masked: `****${tail}` };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -71,7 +84,6 @@ export class PartnersController {
       kind: 'bank',
       payload: { bankCode: body.bankCode, accountNumber: body.accountNumber },
     });
-    // Demo name until the payout partner responds on the worker.
     return { accountName: 'Pending name check' };
   }
 

@@ -9,6 +9,7 @@ import { compareSync, hashSync } from 'bcryptjs';
 import { randomInt } from 'node:crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { v4 as uuidv4 } from 'uuid';
+import { allocatePublicCode } from '../lib/public-code';
 import { JobsService } from '../queue/jobs.service';
 import { PgStore } from '../storage/pg-store';
 import type { StoredUser } from '../storage/types';
@@ -156,6 +157,12 @@ export class AuthService implements OnModuleInit {
       undefined;
     const resolvedEmail = this.resolveEmail(input.email || input.phone);
     const id = `${role}_${Date.now().toString(36)}`;
+    const publicCode =
+      role === 'driver' || role === 'customer'
+        ? await allocatePublicCode(role, (code) =>
+            this.store.publicCodeTaken(code),
+          )
+        : undefined;
 
     const user = await this.store.upsertUser({
       id,
@@ -168,6 +175,7 @@ export class AuthService implements OnModuleInit {
       lastName: lastName || undefined,
       middleName: middleName || undefined,
       referral: input.referral?.trim() || undefined,
+      publicCode,
       status: role === 'driver' ? 'pending' : 'active',
       createdAt: Date.now(),
     });
@@ -270,6 +278,12 @@ export class AuthService implements OnModuleInit {
       const id = `${role}_${Date.now().toString(36)}`;
       const firstName = payload.given_name || '';
       const lastName = payload.family_name || '';
+      const publicCode =
+        role === 'driver' || role === 'customer'
+          ? await allocatePublicCode(role, (code) =>
+              this.store.publicCodeTaken(code),
+            )
+          : undefined;
       user = await this.store.upsertUser({
         id,
         role,
@@ -280,6 +294,7 @@ export class AuthService implements OnModuleInit {
         firstName: firstName || undefined,
         lastName: lastName || undefined,
         photoUrl: payload.picture || undefined,
+        publicCode,
         status: role === 'driver' ? 'pending' : 'active',
         createdAt: Date.now(),
       });
@@ -337,23 +352,34 @@ export class AuthService implements OnModuleInit {
   }
 
   private async issue(user: StoredUser) {
+    const ensured = await this.ensurePublicCode(user);
     const payload: JwtPayload = {
-      sub: user.id,
-      role: user.role,
-      phone: user.phone,
+      sub: ensured.id,
+      role: ensured.role,
+      phone: ensured.phone,
     };
     const token = this.jwt.sign(payload, { expiresIn: '2h' });
     const refresh = `rf_${Date.now().toString(36)}_${randomInt(1e9)}`;
     await this.store.saveRefresh({
       token: refresh,
-      userId: user.id,
+      userId: ensured.id,
       expiresAt: Date.now() + 30 * 86_400_000,
     });
     return {
       token,
       refresh,
-      user: this.publicUser(user),
+      user: this.publicUser(ensured),
     };
+  }
+
+  /** Backfill RRD-#### / RR-#### for accounts created before public codes. */
+  private async ensurePublicCode(user: StoredUser) {
+    if (user.role !== 'driver' && user.role !== 'customer') return user;
+    if (user.publicCode) return user;
+    const publicCode = await allocatePublicCode(user.role, (code) =>
+      this.store.publicCodeTaken(code),
+    );
+    return this.store.upsertUser({ ...user, publicCode });
   }
 
   publicUser(user: StoredUser) {
@@ -374,6 +400,18 @@ export class AuthService implements OnModuleInit {
       state: user.state || null,
       city: user.city || null,
       lga: user.lga || null,
+      publicCode: user.publicCode || null,
+      identity: user.identity
+        ? {
+            maskedNin: user.identity.maskedNin || null,
+            status: user.identity.status || null,
+            failureReason: user.identity.failureReason || null,
+            matchConfidence: user.identity.matchConfidence ?? null,
+            consented: Boolean(user.identity.consented),
+            provider: user.identity.provider || null,
+            verifiedAt: user.identity.verifiedAt || null,
+          }
+        : null,
       status: user.status,
       createdAt: user.createdAt,
     };
