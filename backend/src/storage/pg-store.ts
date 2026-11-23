@@ -1268,4 +1268,121 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       return ['searching', 'assigned'].includes(ride.status);
     });
   }
+
+  async insertWaitlistEntry(row: {
+    id: string;
+    role: 'rider' | 'driver';
+    firstName: string;
+    lastName: string;
+    phone: string;
+    email?: string | null;
+    city: string;
+    vehicleType?: string | null;
+    interest?: string | null;
+    note?: string | null;
+    source?: string;
+    status?: string;
+    createdAt: number;
+  }) {
+    await this.pool.query(
+      `INSERT INTO waitlist_entries (
+        id, role, first_name, last_name, phone, email, city,
+        vehicle_type, interest, note, source, status, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ON CONFLICT (phone, role) DO UPDATE SET
+        first_name = EXCLUDED.first_name,
+        last_name = EXCLUDED.last_name,
+        email = EXCLUDED.email,
+        city = EXCLUDED.city,
+        vehicle_type = EXCLUDED.vehicle_type,
+        interest = EXCLUDED.interest,
+        note = EXCLUDED.note,
+        source = EXCLUDED.source,
+        status = 'new',
+        created_at = EXCLUDED.created_at`,
+      [
+        row.id,
+        row.role,
+        row.firstName,
+        row.lastName,
+        row.phone,
+        row.email || null,
+        row.city,
+        row.vehicleType || null,
+        row.interest || null,
+        row.note || null,
+        row.source || 'landing',
+        row.status || 'new',
+        row.createdAt,
+      ],
+    );
+    return this.findWaitlistByPhoneRole(row.phone, row.role);
+  }
+
+  async getWaitlistEntry(id: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM waitlist_entries WHERE id = $1 LIMIT 1`,
+      [id],
+    );
+    return rows[0] ? this.mapWaitlist(rows[0]) : null;
+  }
+
+  async findWaitlistByPhoneRole(phone: string, role: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM waitlist_entries WHERE phone = $1 AND role = $2 LIMIT 1`,
+      [phone, role],
+    );
+    return rows[0] ? this.mapWaitlist(rows[0]) : null;
+  }
+
+  async listWaitlistEntries(opts?: {
+    role?: string;
+    status?: string;
+    limit?: number;
+  }) {
+    const limit = Math.min(Math.max(opts?.limit || 200, 1), 500);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (opts?.role) {
+      params.push(opts.role);
+      where.push(`role = $${params.length}`);
+    }
+    if (opts?.status) {
+      params.push(opts.status);
+      where.push(`status = $${params.length}`);
+    }
+    params.push(limit);
+    const sql = `SELECT * FROM waitlist_entries
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`;
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((row) => this.mapWaitlist(row));
+  }
+
+  async updateWaitlistStatus(id: string, status: string) {
+    await this.pool.query(
+      `UPDATE waitlist_entries SET status = $2 WHERE id = $1`,
+      [id, status],
+    );
+    return this.getWaitlistEntry(id);
+  }
+
+  private mapWaitlist(row: QueryResultRow) {
+    return {
+      id: row.id as string,
+      role: row.role as 'rider' | 'driver',
+      firstName: row.first_name as string,
+      lastName: row.last_name as string,
+      phone: row.phone as string,
+      email: (row.email as string) || null,
+      city: row.city as string,
+      vehicleType: (row.vehicle_type as string) || null,
+      interest: (row.interest as string) || null,
+      note: (row.note as string) || null,
+      source: (row.source as string) || 'landing',
+      status: (row.status as string) || 'new',
+      createdAt: Number(row.created_at),
+    };
+  }
 }

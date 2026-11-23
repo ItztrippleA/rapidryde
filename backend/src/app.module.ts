@@ -12,6 +12,7 @@ import { RoutingModule } from './routing/routing.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { StorageModule } from './storage/storage.module';
 import { UsersModule } from './users/users.module';
+import { WaitlistModule } from './waitlist/waitlist.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -29,6 +30,7 @@ import { HealthController } from './health.controller';
     PartnersModule,
     PlacesModule,
     RoutingModule,
+    WaitlistModule,
   ],
   controllers: [HealthController],
 })
