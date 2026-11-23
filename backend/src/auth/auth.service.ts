@@ -338,6 +338,8 @@ export class AuthService implements OnModuleInit {
   }
 
   async deleteAccount(userId: string) {
+    const user = await this.store.findUserById(userId);
+    if (!user) throw new UnauthorizedException('Unknown user');
     await this.store.deleteUser(userId);
     return { ok: true };
   }

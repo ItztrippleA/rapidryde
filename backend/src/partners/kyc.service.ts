@@ -52,11 +52,18 @@ export class KycService {
     if (!user) throw new NotFoundException('User not found');
 
     const ninHash = hashNin(nin, this.ninPepper());
-    const ninOwner = await this.store.findUserByNinHash(ninHash, userId);
-    if (ninOwner) {
-      throw new ConflictException(
-        'This NIN is already registered on another Rapyd Ryd account.',
+    const sandboxNin = this.isDevSandboxNin(nin);
+    if (sandboxNin) {
+      this.log.warn(
+        `[kyc/nin] (dev) allowing reusable sandbox NIN *******${nin.slice(-4)}`,
       );
+    } else {
+      const ninOwner = await this.store.findUserByNinHash(ninHash, userId);
+      if (ninOwner) {
+        throw new ConflictException(
+          'This NIN is already registered on another Rapyd Ryd account.',
+        );
+      }
     }
 
     let collectionId = '';
@@ -104,11 +111,13 @@ export class KycService {
 
     let faceId = user.identity?.faceId || '';
     if (approved) {
-      const raced = await this.store.findUserByNinHash(ninHash, userId);
-      if (raced) {
-        throw new ConflictException(
-          'This NIN is already registered on another Rapyd Ryd account.',
-        );
+      if (!sandboxNin) {
+        const raced = await this.store.findUserByNinHash(ninHash, userId);
+        if (raced) {
+          throw new ConflictException(
+            'This NIN is already registered on another Rapyd Ryd account.',
+          );
+        }
       }
 
       if (selfie && collectionId) {
@@ -146,7 +155,8 @@ export class KycService {
       await this.store.upsertUser({
         ...user,
         identity,
-        ninHash: approved ? ninHash : user.ninHash,
+        // Sandbox NIN is shared in (dev) — do not lock uniqueness on it.
+        ninHash: approved && !sandboxNin ? ninHash : user.ninHash,
         firstName: user.firstName || result.firstName || user.firstName,
         lastName: user.lastName || result.lastName || user.lastName,
         middleName: user.middleName || result.middleName || user.middleName,
@@ -197,6 +207,12 @@ export class KycService {
     if (this.config.get<string>('DOJAH_REQUIRE_SELFIE') === 'true') return false;
     if (this.config.get<string>('DOJAH_REQUIRE_SELFIE') === 'false') return true;
     return this.config.get<string>('NODE_ENV') !== 'production';
+  }
+
+  /** Dojah sandbox test NIN — reusable while not in production. */
+  private isDevSandboxNin(nin: string) {
+    if (this.config.get<string>('NODE_ENV') === 'production') return false;
+    return nin === '70123456789';
   }
 
   private ninPepper() {

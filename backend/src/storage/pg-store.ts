@@ -190,6 +190,26 @@ CREATE INDEX IF NOT EXISTS rides_driver_idx ON rides (driver_id);
 CREATE INDEX IF NOT EXISTS rides_status_idx ON rides (status);
 CREATE INDEX IF NOT EXISTS rides_updated_idx ON rides (updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS waitlist_entries (
+  id TEXT PRIMARY KEY,
+  role TEXT NOT NULL,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  email TEXT,
+  city TEXT NOT NULL,
+  vehicle_type TEXT,
+  interest TEXT,
+  note TEXT,
+  source TEXT NOT NULL DEFAULT 'landing',
+  status TEXT NOT NULL DEFAULT 'new',
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS waitlist_created_idx ON waitlist_entries (created_at DESC);
+CREATE INDEX IF NOT EXISTS waitlist_role_idx ON waitlist_entries (role);
+CREATE INDEX IF NOT EXISTS waitlist_status_idx ON waitlist_entries (status);
+CREATE UNIQUE INDEX IF NOT EXISTS waitlist_phone_role_uidx ON waitlist_entries (phone, role);
+
 CREATE TABLE IF NOT EXISTS pricing (
   id TEXT PRIMARY KEY DEFAULT 'default',
   factors JSONB NOT NULL,
@@ -525,9 +545,20 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
   }
 
   async deleteUser(userId: string) {
+    const user = await this.findUserById(userId);
     await this.pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [
       userId,
     ]);
+    await this.pool.query(`DELETE FROM scheduled_reminders WHERE user_id = $1`, [
+      userId,
+    ]);
+    if (user?.phone) {
+      await this.pool.query(`DELETE FROM otps WHERE phone = $1`, [user.phone]);
+      await this.pool.query(`DELETE FROM otp_verifications WHERE phone = $1`, [
+        user.phone,
+      ]);
+    }
+    // Keep ride history for ops; strip live presence / apps via CASCADE on users.
     await this.pool.query(`DELETE FROM users WHERE id = $1`, [userId]);
   }
 

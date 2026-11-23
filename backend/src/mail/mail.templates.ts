@@ -73,11 +73,13 @@ export function renderMail(
           : purpose === 'reset'
             ? `Your ${theme.brandName} reset code`
             : `Your ${theme.brandName} login code`;
-      const text = `Your ${theme.brandName} code is ${code}. It expires in 10 minutes. If you did not ask for this, ignore the email.`;
+      // Phrase codes so iOS/Android can offer autofill from Mail/SMS.
+      const text = `${code} is your ${theme.brandName} verification code. It expires in 10 minutes. If you did not ask for this, ignore the email.`;
       const inner = `
         <h1 style="font-size:28px;margin:8px 0 12px;color:${theme.ink};">Your code</h1>
         <p style="color:${theme.muted};line-height:1.5;">Use this one-time code to continue. It expires in 10 minutes.</p>
         <p style="font-size:36px;font-weight:800;letter-spacing:0.2em;margin:24px 0;color:${theme.accent};">${code}</p>
+        <p style="color:${theme.muted};font-size:13px;">${code} is your ${theme.brandName} verification code.</p>
         <p style="color:${theme.muted};font-size:13px;">Purpose: ${purpose}. If you did not ask for this, you can ignore the email.</p>
       `;
       return { subject, text, html: wrapWithTheme(theme, inner, vars) };

@@ -12,6 +12,7 @@ import { makeCharge } from './trip-charges';
 import { WaitingService } from './waiting.service';
 import { SchedulerService } from '../scheduler/scheduler.service';
 import { PgStore } from '../storage/pg-store';
+import { RideBus } from './ride-bus';
 import {
   normalizeRide,
   type ChatEvent,
@@ -62,6 +63,7 @@ export class RidesService {
     private readonly scheduler: SchedulerService,
     private readonly routing: RoutingService,
     private readonly waiting: WaitingService,
+    private readonly bus: RideBus,
   ) {}
 
   async create(input: CreateRideInput) {
@@ -421,6 +423,7 @@ export class RidesService {
     }
     next.updatedAt = now;
     await this.store.upsertRide(next);
+    this.bus.toRide(id, 'ride:stage', { stage: status, id });
 
     if (next.driverId) {
       if (status === 'on_trip') {
@@ -576,6 +579,23 @@ export class RidesService {
     next.locationTrail = [...next.locationTrail, ping].slice(-TRAIL_CAP);
     next.updatedAt = now;
     await this.store.upsertRide(next);
+    if (role === 'driver') {
+      this.bus.toRide(id, 'ride:location', {
+        latitude: point.latitude,
+        longitude: point.longitude,
+        heading: point.heading,
+        at: now,
+        rideId: id,
+      });
+    } else {
+      this.bus.toRide(id, 'passenger:location', {
+        latitude: point.latitude,
+        longitude: point.longitude,
+        heading: point.heading,
+        at: now,
+        rideId: id,
+      });
+    }
     return {
       id: next.id,
       status: next.status,
