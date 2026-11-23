@@ -5,8 +5,10 @@ import DeleteOutlinedIcon from "@mui/icons-material/DeleteOutlined";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import IconButton from "@mui/material/IconButton";
 import MenuItem from "@mui/material/MenuItem";
+import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useEffect, useMemo, useState } from "react";
@@ -15,27 +17,52 @@ import { useEdit } from "@/components/access/Gate";
 import { adminLogin, api, hasApi } from "@/lib/api";
 import { naira, uid } from "@/lib/format";
 import { fareParts, quoteFare } from "@/lib/pricing";
-import type { Pricing } from "@/lib/types";
+import type { OpsPolicy, Pricing } from "@/lib/types";
 import { useAdminStore } from "@/store/useAdminStore";
+
+const defaultOps: OpsPolicy = {
+  maxStops: 2,
+  minorDetourMeters: 500,
+  moderateDetourMeters: 1000,
+  freeWaitMinutes: 10,
+  waitWarningMinutes: 8,
+  waitGraceMinutes: 0,
+  waitAppliesToPickup: true,
+  waitAppliesToStops: true,
+  arrivalGeofenceMeters: 120,
+  trafficCompMinDelayMinutes: 10,
+  trafficCompPerMinute: 20,
+  trafficCompMaxPerTrip: 2000,
+  trafficCompClassIds: [],
+  trafficCompCities: [],
+  chargePassengerForTraffic: false,
+};
+
+function withOps(pricing: Pricing): Pricing {
+  return { ...pricing, ops: { ...defaultOps, ...(pricing.ops || {}) } };
+}
 
 export function PricingView() {
   const edit = useEdit();
   const saved = useAdminStore((state) => state.pricing);
   const hydrated = useAdminStore((state) => state.hasHydrated);
   const setPricing = useAdminStore((state) => state.setPricing);
-  const [draft, setDraft] = useState<Pricing>(saved);
+  const [draft, setDraft] = useState<Pricing>(() => withOps(saved));
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const ops = draft.ops || defaultOps;
 
   useEffect(() => {
     if (hydrated && !copied) {
-      setDraft({
-        ...saved,
-        perKm: saved.perKm ?? 140,
-        distanceMode: saved.distanceMode ?? "banded",
-      });
+      setDraft(
+        withOps({
+          ...saved,
+          perKm: saved.perKm ?? 140,
+          distanceMode: saved.distanceMode ?? "banded",
+        }),
+      );
       setCopied(true);
     }
   }, [hydrated, copied, saved]);
@@ -44,19 +71,20 @@ export function PricingView() {
     if (!hasApi()) return;
     void api<Pricing>("/pricing")
       .then((remote) => {
-        setDraft({
+        const next = withOps({
           ...remote,
           perKm: remote.perKm ?? 140,
           distanceMode: remote.distanceMode ?? "banded",
         });
-        setPricing({
-          ...remote,
-          perKm: remote.perKm ?? 140,
-          distanceMode: remote.distanceMode ?? "banded",
-        });
+        setDraft(next);
+        setPricing(next);
       })
       .catch(() => undefined);
   }, [setPricing]);
+
+  function patchOps(patch: Partial<OpsPolicy>) {
+    setDraft({ ...draft, ops: { ...ops, ...patch } });
+  }
 
   const [km, setKm] = useState(8);
   const [minutes, setMinutes] = useState(18);
@@ -170,6 +198,44 @@ export function PricingView() {
               </Box>
             ))}
             {edit ? <Button startIcon={<AddIcon />} onClick={() => setDraft({ ...draft, bands: [...draft.bands, { id: uid("b"), label: "New band", upToKm: 20, perKm: 100 }] })}>Add band</Button> : null}
+          </Panel>
+          <Panel title="Stops & detours">
+            <Typography color="text.secondary" sx={{ mb: 1.5 }}>
+              Mid-trip stop detours use driving distance from Google Routes, not straight-line.
+            </Typography>
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5 }}>
+              <TextField label="Max stops" type="number" value={ops.maxStops} onChange={(event) => patchOps({ maxStops: Number(event.target.value) })} />
+              <TextField label="Minor detour (m)" type="number" value={ops.minorDetourMeters} onChange={(event) => patchOps({ minorDetourMeters: Number(event.target.value) })} />
+              <TextField label="Significant above (m)" type="number" value={ops.moderateDetourMeters} onChange={(event) => patchOps({ moderateDetourMeters: Number(event.target.value) })} />
+              <TextField label="Arrival geofence (m)" type="number" value={ops.arrivalGeofenceMeters} onChange={(event) => patchOps({ arrivalGeofenceMeters: Number(event.target.value) })} />
+            </Box>
+          </Panel>
+          <Panel title="Waiting policy">
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5 }}>
+              <TextField label="Free waiting (min)" type="number" value={ops.freeWaitMinutes} onChange={(event) => patchOps({ freeWaitMinutes: Number(event.target.value) })} />
+              <TextField label="Warning at minute" type="number" value={ops.waitWarningMinutes} onChange={(event) => patchOps({ waitWarningMinutes: Number(event.target.value) })} />
+              <TextField label="Grace after free (min)" type="number" value={ops.waitGraceMinutes} onChange={(event) => patchOps({ waitGraceMinutes: Number(event.target.value) })} />
+              {money("waitPerMinute", "Wait fee / minute (₦)")}
+            </Box>
+            <Box sx={{ display: "grid", gap: 0.5, mt: 1.5 }}>
+              <FormControlLabel control={<Switch checked={ops.waitAppliesToPickup} onChange={(_, checked) => patchOps({ waitAppliesToPickup: checked })} />} label="Applies at pickup" />
+              <FormControlLabel control={<Switch checked={ops.waitAppliesToStops} onChange={(_, checked) => patchOps({ waitAppliesToStops: checked })} />} label="Applies at additional stops" />
+            </Box>
+          </Panel>
+          <Panel title="Traffic compensation (driver)">
+            <Typography color="text.secondary" sx={{ mb: 1.5 }}>
+              Pays drivers for verified unexpected delay. Does not auto-debit riders unless enabled below.
+            </Typography>
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5 }}>
+              <TextField label="Min delay (min)" type="number" value={ops.trafficCompMinDelayMinutes} onChange={(event) => patchOps({ trafficCompMinDelayMinutes: Number(event.target.value) })} />
+              <TextField label="₦ per minute" type="number" value={ops.trafficCompPerMinute} onChange={(event) => patchOps({ trafficCompPerMinute: Number(event.target.value) })} />
+              <TextField label="Max per trip (₦)" type="number" value={ops.trafficCompMaxPerTrip} onChange={(event) => patchOps({ trafficCompMaxPerTrip: Number(event.target.value) })} />
+            </Box>
+            <FormControlLabel
+              sx={{ mt: 1 }}
+              control={<Switch checked={ops.chargePassengerForTraffic} onChange={(_, checked) => patchOps({ chargePassengerForTraffic: checked })} />}
+              label="Also charge passenger for traffic (off by default)"
+            />
           </Panel>
         </Box>
         <Box sx={{ p: 2.5, borderRadius: "8px", border: "1px solid", borderColor: "divider", bgcolor: "background.paper", position: { lg: "sticky" }, top: 84 }}>

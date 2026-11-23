@@ -15,6 +15,7 @@ import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useMemo, useState } from "react";
+import { DriverActivity } from "@/components/drivers/DriverActivity";
 import { Confirm, Editor, PageHeader, Pill } from "@/components/ui/Chrome";
 import { useEdit } from "@/components/access/Gate";
 import { emptyDriverProfile, maskAccount, readyToGoLive, withProfile } from "@/lib/drivers";
@@ -83,6 +84,7 @@ export function DriversView() {
         lede="After signup a driver stays pending until you approve them. They cannot go live before that, and a passed NIN check with valid papers is still required."
         action={edit ? <Button variant="contained" onClick={() => { setCreating(true); setDraft(blank()); }}>Add driver</Button> : null}
       />
+      <DriverActivity drivers={drivers} />
       <TextField size="small" label="Search drivers" value={query} onChange={(event) => setQuery(event.target.value)} sx={{ mb: 2, width: { xs: "100%", sm: 320 } }} />
       <Box sx={{ overflow: "auto", border: "1px solid", borderColor: "divider", borderRadius: "8px", bgcolor: "background.paper" }}>
         <Table size="small">

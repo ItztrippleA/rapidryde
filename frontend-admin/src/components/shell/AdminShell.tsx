@@ -14,6 +14,7 @@ import LocalOfferOutlinedIcon from "@mui/icons-material/LocalOfferOutlined";
 import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
 import MapOutlinedIcon from "@mui/icons-material/MapOutlined";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
+import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
 import MailOutlinedIcon from "@mui/icons-material/MailOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
@@ -83,6 +84,7 @@ const groups: { label: string; items: { href: string; section: Section; label: s
     label: "System",
     items: [
       { href: "/config", section: "config", label: "Configuration", icon: TuneOutlinedIcon },
+      { href: "/doc", section: "doc", label: "Doc", icon: MenuBookOutlinedIcon },
       { href: "/access", section: "access", label: "Access", icon: AdminPanelSettingsOutlinedIcon },
     ],
   },

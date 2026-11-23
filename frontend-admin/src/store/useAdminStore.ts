@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { freshData } from "@/data/seed";
-import { readyToGoLive, withProfile } from "@/lib/drivers";
+import { applyBan, clearBan, readyToGoLive, withProfile } from "@/lib/drivers";
 import type { Activity, AppConfig, ChatMessage, ChatStatus, ChatThread, Customer, Delivery, DeliveryZone, Driver, NoticeTemplate, OutboxItem, Plan, Pricing, Promo, Ride, RideZone, Staff, Subscription } from "@/lib/types";
 
 function completedFare(ride: Ride | undefined) {
@@ -30,6 +30,9 @@ type AdminState = Data & {
   reset: () => void;
   note: (text: string) => void;
   saveDriver: (driver: Driver, creating: boolean) => void;
+  banDriver: (id: string, kind: "soft" | "hard", reason: string) => void;
+  clearDriverBan: (id: string) => void;
+  logDriverComplaint: (id: string, note?: string) => void;
   removeDriver: (id: string) => void;
   saveCustomer: (customer: Customer, creating: boolean) => void;
   removeCustomer: (id: string) => void;
@@ -81,6 +84,46 @@ export const useAdminStore = create<AdminState>()(
           return {
             drivers: upsert(state.drivers, saved, creating),
             activity: [stamp(`${creating ? "Added" : "Updated"} driver ${saved.name}.`), ...state.activity].slice(0, 30),
+          };
+        }),
+      banDriver: (id, kind, reason) =>
+        set((state) => {
+          const current = state.drivers.find((driver) => driver.id === id);
+          if (!current) return state;
+          const banned = applyBan(withProfile(current), kind, reason);
+          return {
+            drivers: state.drivers.map((driver) => (driver.id === id ? banned : driver)),
+            activity: [
+              stamp(`${kind === "hard" ? "Hard" : "Soft"} banned ${banned.name}${reason.trim() ? `: ${reason.trim()}` : ""}.`),
+              ...state.activity,
+            ].slice(0, 30),
+          };
+        }),
+      clearDriverBan: (id) =>
+        set((state) => {
+          const current = state.drivers.find((driver) => driver.id === id);
+          if (!current) return state;
+          const cleared = clearBan(withProfile(current));
+          return {
+            drivers: state.drivers.map((driver) => (driver.id === id ? cleared : driver)),
+            activity: [stamp(`Cleared ban for ${cleared.name}.`), ...state.activity].slice(0, 30),
+          };
+        }),
+      logDriverComplaint: (id, note) =>
+        set((state) => {
+          const current = state.drivers.find((driver) => driver.id === id);
+          if (!current) return state;
+          const next = {
+            ...withProfile(current),
+            complaintCount: (current.complaintCount ?? 0) + 1,
+            lastComplaintAt: new Date().toISOString(),
+          };
+          return {
+            drivers: state.drivers.map((driver) => (driver.id === id ? next : driver)),
+            activity: [
+              stamp(`Logged complaint on ${next.name}${note?.trim() ? `: ${note.trim()}` : ""}.`),
+              ...state.activity,
+            ].slice(0, 30),
           };
         }),
       removeDriver: (id) =>

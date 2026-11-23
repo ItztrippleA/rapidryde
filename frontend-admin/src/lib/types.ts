@@ -9,17 +9,31 @@ export type PromoKind = "percent" | "amount";
 export type NoticeChannel = "email" | "native";
 export type Audience = "drivers" | "customers" | "both";
 
+/** Soft: can log in, no offers. Hard: inactive, cannot log in (forced logout). */
+export type BanKind = "soft" | "hard" | null;
+
+export type ComplaintMeterLevel = "clear" | "watch" | "alert" | "critical";
+
 export interface Driver {
   id: string;
+  /** Public desk code, e.g. RRD-3456. Optional until backfilled. */
+  code?: string;
   name: string;
   phone: string;
   email: string;
   city: CityId;
   ninStatus: NinStatus;
   status: AccountStatus;
+  /** null when not banned. Soft keeps status suspended; hard keeps status closed. */
+  banKind?: BanKind;
+  banReason?: string;
+  bannedAt?: string;
   online: boolean;
   rating: number;
   trips: number;
+  /** Rider complaints logged against this driver. */
+  complaintCount?: number;
+  lastComplaintAt?: string;
   vehicle: string;
   plate: string;
   classId: RideClassId;
@@ -53,6 +67,8 @@ export interface DriverProfile {
 
 export interface Customer {
   id: string;
+  /** Public desk code, e.g. RR-2342. Optional until backfilled. */
+  code?: string;
   name: string;
   phone: string;
   email: string;
@@ -77,13 +93,22 @@ export interface Plan {
   active: boolean;
 }
 
+export type SubscriptionPayment = "card" | "wallet" | "direct_transfer";
+
 export interface Subscription {
   id: string;
   planId: string;
   holder: "driver" | "customer";
   holderId: string;
-  status: "active" | "past_due" | "cancelled";
+  status: "active" | "past_due" | "cancelled" | "pending_transfer";
   renewsOn: string;
+  /** How the period was paid. Direct transfer is matched with holderCode. */
+  paymentMethod?: SubscriptionPayment;
+  /** Public code used as bank narration, e.g. RRD-3456 / RR-2342. */
+  holderCode?: string;
+  /** Optional bank reference from the statement. */
+  transferRef?: string;
+  notedAt?: string;
 }
 
 export interface RideZone {
@@ -207,6 +232,24 @@ export interface ClassRate {
 
 export type DistanceMode = "flat" | "banded";
 
+export interface OpsPolicy {
+  maxStops: number;
+  minorDetourMeters: number;
+  moderateDetourMeters: number;
+  freeWaitMinutes: number;
+  waitWarningMinutes: number;
+  waitGraceMinutes: number;
+  waitAppliesToPickup: boolean;
+  waitAppliesToStops: boolean;
+  arrivalGeofenceMeters: number;
+  trafficCompMinDelayMinutes: number;
+  trafficCompPerMinute: number;
+  trafficCompMaxPerTrip: number;
+  trafficCompClassIds: string[];
+  trafficCompCities: string[];
+  chargePassengerForTraffic: boolean;
+}
+
 export interface Pricing {
   /** B — base fare */
   baseFare: number;
@@ -228,6 +271,7 @@ export interface Pricing {
   distanceMode: DistanceMode;
   bands: DistanceBand[];
   classes: ClassRate[];
+  ops?: OpsPolicy;
 }
 
 export interface AppConfig {
@@ -237,6 +281,10 @@ export interface AppConfig {
   stillPlay: boolean;
   supportEmail: string;
   supportPhone: string;
+  /** Where drivers send subscription bank transfers. Narration must be their RRD code. */
+  subscriptionBankName?: string;
+  subscriptionAccountName?: string;
+  subscriptionAccountNumber?: string;
   searchRadiusKm: number;
   offerWindowSec: number;
   driver: {
