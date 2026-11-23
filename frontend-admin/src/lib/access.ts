@@ -5,6 +5,7 @@ export type Section =
   | "analytics"
   | "drivers"
   | "customers"
+  | "survey"
   | "map"
   | "rides"
   | "deliveries"
@@ -24,6 +25,7 @@ export const sections: Section[] = [
   "analytics",
   "drivers",
   "customers",
+  "survey",
   "map",
   "rides",
   "deliveries",
@@ -44,6 +46,7 @@ export const sectionLabel: Record<Section, string> = {
   analytics: "Analytics",
   drivers: "Drivers",
   customers: "Customers",
+  survey: "Survey",
   map: "Fleet map",
   rides: "Rides",
   deliveries: "Deliveries",
@@ -72,19 +75,19 @@ const all = sections;
 export const grants: Record<StaffRole, { view: Section[]; edit: Section[] }> = {
   owner: { view: all, edit: all },
   operations: {
-    view: ["dashboard", "analytics", "drivers", "customers", "map", "rides", "deliveries", "zones", "support", "doc"],
-    edit: ["drivers", "customers", "rides", "deliveries", "zones"],
+    view: ["dashboard", "analytics", "drivers", "customers", "survey", "map", "rides", "deliveries", "zones", "support", "doc"],
+    edit: ["drivers", "customers", "survey", "rides", "deliveries", "zones"],
   },
   support: {
-    view: ["dashboard", "analytics", "customers", "drivers", "map", "rides", "deliveries", "notifications", "email", "support", "doc"],
-    edit: ["customers", "rides", "deliveries", "notifications", "email", "support"],
+    view: ["dashboard", "analytics", "customers", "drivers", "survey", "map", "rides", "deliveries", "notifications", "email", "support", "doc"],
+    edit: ["customers", "survey", "rides", "deliveries", "notifications", "email", "support"],
   },
   finance: {
     view: ["dashboard", "analytics", "rides", "pricing", "subscriptions", "promos", "doc"],
     edit: ["pricing", "subscriptions", "promos"],
   },
   viewer: {
-    view: ["dashboard", "analytics", "drivers", "customers", "map", "rides", "deliveries", "support", "doc"],
+    view: ["dashboard", "analytics", "drivers", "customers", "survey", "map", "rides", "deliveries", "support", "doc"],
     edit: [],
   },
 };

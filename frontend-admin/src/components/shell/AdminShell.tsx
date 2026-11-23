@@ -19,6 +19,7 @@ import MenuIcon from "@mui/icons-material/Menu";
 import MailOutlinedIcon from "@mui/icons-material/MailOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import PaymentsOutlinedIcon from "@mui/icons-material/PaymentsOutlined";
+import PollOutlinedIcon from "@mui/icons-material/PollOutlined";
 import RouteOutlinedIcon from "@mui/icons-material/RouteOutlined";
 import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 import Avatar from "@mui/material/Avatar";
@@ -53,6 +54,7 @@ const groups: { label: string; items: { href: string; section: Section; label: s
     items: [
       { href: "/drivers", section: "drivers", label: "Drivers", icon: DirectionsCarOutlinedIcon },
       { href: "/customers", section: "customers", label: "Customers", icon: GroupOutlinedIcon },
+      { href: "/survey", section: "survey", label: "Survey", icon: PollOutlinedIcon },
     ],
   },
   {
