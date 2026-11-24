@@ -28,6 +28,52 @@ export class SupportService {
     return all.find((thread) => thread.partyId === partyId) || null;
   }
 
+  /** Desk opens (or reopens) a chat with a customer or driver. */
+  async openForParty(input: {
+    party: SupportParty;
+    partyId: string;
+    subject?: string;
+  }) {
+    const partyId = input.partyId?.trim();
+    if (!partyId) throw new BadRequestException('partyId is required.');
+    if (input.party !== 'customer' && input.party !== 'driver') {
+      throw new BadRequestException('party must be customer or driver.');
+    }
+
+    const user = await this.store.findUserById(partyId);
+    if (!user) throw new NotFoundException('User not found.');
+
+    const existing = await this.myThread(input.party, partyId);
+    if (existing) {
+      if (existing.status === 'closed') {
+        return this.setStatus(existing.id, 'open');
+      }
+      return existing;
+    }
+
+    const now = Date.now();
+    const partyName =
+      user.name ||
+      [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+      (input.party === 'driver' ? 'Driver' : 'Customer');
+    const thread: SupportThread = {
+      id: `sup_${now.toString(36)}_${randomBytes(3).toString('hex')}`,
+      party: input.party,
+      partyId,
+      partyName,
+      partyPhone: user.phone || '',
+      city: (user.city || 'abuja').toLowerCase(),
+      subject: (input.subject || 'Desk outreach').slice(0, 80),
+      status: 'open',
+      messages: [],
+      updatedAt: now,
+      createdAt: now,
+    };
+    const saved = await this.store.upsertSupportThread(thread);
+    this.bus.toDesk('support:thread', saved);
+    return saved;
+  }
+
   list(opts?: { party?: string; status?: string; limit?: number }) {
     return this.store.listSupportThreads(opts);
   }

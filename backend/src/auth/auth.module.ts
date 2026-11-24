@@ -14,7 +14,7 @@ import { JwtStrategy } from './jwt.strategy';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         secret: config.get<string>('JWT_SECRET') || 'rapyd-dev-secret',
-        signOptions: { expiresIn: '2h' },
+        signOptions: { expiresIn: '7d' },
       }),
     }),
   ],

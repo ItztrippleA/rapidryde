@@ -52,6 +52,19 @@ class StatusDto {
   status!: 'waiting' | 'open' | 'closed';
 }
 
+class OpenThreadDto {
+  @IsIn(['customer', 'driver'])
+  party!: 'customer' | 'driver';
+
+  @IsString()
+  @MinLength(1)
+  partyId!: string;
+
+  @IsOptional()
+  @IsString()
+  subject?: string;
+}
+
 @Controller()
 export class SupportController {
   constructor(private readonly support: SupportService) {}
@@ -96,6 +109,17 @@ export class SupportController {
       party: party || undefined,
       status: status || undefined,
       limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/support/open')
+  open(@Body() body: OpenThreadDto) {
+    return this.support.openForParty({
+      party: body.party,
+      partyId: body.partyId,
+      subject: body.subject,
     });
   }
 

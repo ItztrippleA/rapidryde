@@ -375,12 +375,12 @@ export class AuthService implements OnModuleInit {
       role: ensured.role,
       phone: ensured.phone,
     };
-    const token = this.jwt.sign(payload, { expiresIn: '2h' });
+    const token = this.jwt.sign(payload, { expiresIn: '7d' });
     const refresh = `rf_${Date.now().toString(36)}_${randomInt(1e9)}`;
     await this.store.saveRefresh({
       token: refresh,
       userId: ensured.id,
-      expiresAt: Date.now() + 30 * 86_400_000,
+      expiresAt: Date.now() + 7 * 86_400_000,
     });
     return {
       token,

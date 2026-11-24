@@ -306,13 +306,25 @@ export class RidesController {
     @Req() req: { user: JwtPayload },
     @Query('status') status?: string,
     @Query('limit') limit?: string,
+    @Query('driverId') driverId?: string,
+    @Query('customerId') customerId?: string,
   ) {
     const role = req.user.role;
     return this.rides.list({
       status,
       limit: limit ? Number(limit) : undefined,
-      customerId: role === 'customer' ? req.user.sub : undefined,
-      driverId: role === 'driver' ? req.user.sub : undefined,
+      customerId:
+        role === 'customer'
+          ? req.user.sub
+          : role === 'admin'
+            ? customerId
+            : undefined,
+      driverId:
+        role === 'driver'
+          ? req.user.sub
+          : role === 'admin'
+            ? driverId
+            : undefined,
     });
   }
 
