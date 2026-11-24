@@ -2,9 +2,11 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { DriversService } from '../drivers/drivers.service';
+import { alongDestination, kmBetween } from '../lib/geo';
 import { PricingService } from '../pricing/pricing.service';
 import { JobsService } from '../queue/jobs.service';
 import { RoutingService } from '../routing/routing.service';
@@ -23,6 +25,30 @@ import {
   type RideStop,
   type StatusEvent,
 } from './ride.types';
+
+function paymentLabel(
+  payment: PaymentMethod | string | undefined,
+): 'Cash' | 'Wallet' | 'Card' | 'Transfer' {
+  switch (payment) {
+    case 'wallet':
+      return 'Wallet';
+    case 'card':
+      return 'Card';
+    case 'transfer':
+      return 'Transfer';
+    default:
+      return 'Cash';
+  }
+}
+
+function vehicleBits(vehicle: Record<string, unknown> | null | undefined) {
+  const make = String(vehicle?.make || '').trim();
+  const model = String(vehicle?.model || '').trim();
+  const colour = String(vehicle?.colour || vehicle?.color || '').trim();
+  const plate = String(vehicle?.plate || '').trim();
+  const label = [make, model].filter(Boolean).join(' ') || 'Car';
+  return { label, colour: colour || 'Car', plate };
+}
 
 export type CreateRideInput = {
   customerId: string;
@@ -48,6 +74,8 @@ export type CreateRideInput = {
   scheduledAt?: number | null;
   city?: string;
   customerLocation?: { latitude: number; longitude: number };
+  /** Match radius around pickup — drivers farther than this are not offered. */
+  radiusKm?: number;
 };
 
 const TRAIL_CAP = 400;
@@ -55,6 +83,8 @@ const CHAT_CAP = 200;
 
 @Injectable()
 export class RidesService {
+  private readonly log = new Logger(RidesService.name);
+
   constructor(
     private readonly store: PgStore,
     private readonly pricing: PricingService,
@@ -190,12 +220,15 @@ export class RidesService {
         ride.customerId,
       ]);
     } else {
+      const radiusKm = Math.max(1, Math.min(40, Number(input.radiusKm) || 6));
       void this.jobs.enqueue('dispatch.match', {
         rideId: ride.id,
         pickupLat: input.pickupLat,
         pickupLng: input.pickupLng,
-        radiusKm: 6,
+        radiusKm,
       });
+      // Fan out immediately — memory/redis jobs can lag a few seconds.
+      void this.dispatchOffers(ride.id, { radiusKm });
     }
     void this.jobs.enqueue('analytics.track', {
       name: 'ride_requested',
@@ -203,6 +236,171 @@ export class RidesService {
     });
 
     return { ride, quote, traffic: routed };
+  }
+
+  /**
+   * Match available online drivers near pickup and emit `ride:offer` / `ride:driver`.
+   */
+  async dispatchOffers(
+    rideId: string,
+    opts?: { radiusKm?: number; driverPriced?: boolean },
+  ) {
+    const ride = await this.get(rideId);
+    if (ride.status !== 'searching') {
+      return { offered: 0, reason: 'not_searching' as const };
+    }
+    const radiusKm = Math.max(1, Number(opts?.radiusKm) || 6);
+    const pickup = {
+      latitude: ride.pickup.latitude,
+      longitude: ride.pickup.longitude,
+    };
+    const drop = {
+      latitude: ride.dropoff.latitude,
+      longitude: ride.dropoff.longitude,
+    };
+
+    let live = await this.store.listLiveDrivers({
+      city: ride.city || undefined,
+      onlineOnly: true,
+    });
+    if (live.length === 0 && ride.city) {
+      live = await this.store.listLiveDrivers({ onlineOnly: true });
+    }
+
+    const available = live.filter(
+      (driver) =>
+        driver.status === 'available' &&
+        driver.latitude != null &&
+        driver.longitude != null &&
+        Number.isFinite(driver.latitude) &&
+        Number.isFinite(driver.longitude),
+    );
+
+    type Match = {
+      driverId: string;
+      name: string;
+      phone: string;
+      latitude: number;
+      longitude: number;
+      km: number;
+      vehicleLabel: string;
+      colour: string;
+      plate: string;
+      photo?: string;
+    };
+
+    const matches: Match[] = [];
+    for (const driver of available) {
+      const km = kmBetween(
+        { latitude: driver.latitude!, longitude: driver.longitude! },
+        pickup,
+      );
+      const driverRadius = Number(
+        driver.effectiveRadiusKm ?? driver.maxDispatchRadiusKm ?? 10,
+      );
+      if (km > radiusKm + 0.05) continue;
+      if (km > driverRadius + 0.05) continue;
+
+      const destOn = Boolean(driver.destinationEnabled);
+      const destReady =
+        destOn &&
+        driver.destinationLat != null &&
+        driver.destinationLng != null &&
+        Number.isFinite(driver.destinationLat) &&
+        Number.isFinite(driver.destinationLng);
+      if (destReady) {
+        const along = alongDestination(
+          pickup,
+          drop,
+          {
+            latitude: driver.destinationLat!,
+            longitude: driver.destinationLng!,
+          },
+          { nearKm: Number(driver.destinationRadiusKm ?? 8) },
+        );
+        if (!along) continue;
+      }
+
+      const app = await this.store.getDriverApplication(driver.driverId);
+      const bits = vehicleBits(app?.vehicle);
+      const photo = String(
+        (app?.profile as { photoUrl?: string } | undefined)?.photoUrl || '',
+      ).trim();
+      matches.push({
+        driverId: driver.driverId,
+        name: driver.name || 'Driver',
+        phone: driver.phone || '',
+        latitude: driver.latitude!,
+        longitude: driver.longitude!,
+        km: Math.round(km * 10) / 10,
+        vehicleLabel: bits.label,
+        colour: bits.colour,
+        plate: bits.plate,
+        photo: photo || undefined,
+      });
+    }
+
+    matches.sort((a, b) => a.km - b.km);
+    const top = matches.slice(0, 12);
+
+    if (top.length === 0) {
+      this.log.debug(
+        `dispatch ${rideId}: no drivers within ${radiusKm}km (live=${live.length} available=${available.length})`,
+      );
+      this.bus.toRide(rideId, 'ride:none', { id: rideId });
+      this.bus.toUser(ride.customerId, 'ride:none', { id: rideId });
+      return { offered: 0, reason: 'none_nearby' as const };
+    }
+
+    const pay = paymentLabel(ride.payment);
+    const expiresAt = Date.now() + 45_000;
+    for (const match of top) {
+      const pickupMin = Math.max(1, Math.round((match.km / 25) * 60));
+      this.bus.toDriver(match.driverId, 'ride:offer', {
+        id: ride.id,
+        passenger: ride.customer.name || 'Rider',
+        rating: 4.9,
+        pickup: ride.pickup.label,
+        dropoff: ride.dropoff.label,
+        pickupLat: ride.pickup.latitude,
+        pickupLng: ride.pickup.longitude,
+        dropLat: ride.dropoff.latitude,
+        dropLng: ride.dropoff.longitude,
+        pickupKm: match.km,
+        pickupMin,
+        tripKm: ride.plannedKm,
+        tripMin: ride.plannedMinutes,
+        fare: ride.fare,
+        earnings: ride.earnings,
+        quotedFare: ride.quoted,
+        payment: pay,
+        note: ride.note || '',
+        expiresAt,
+        fareTalk: opts?.driverPriced ? 'waiting' : 'agreed',
+      });
+
+      const card = {
+        id: match.driverId,
+        name: match.name,
+        rating: 4.9,
+        vehicle: match.vehicleLabel,
+        colour: match.colour,
+        plate: match.plate,
+        fare: ride.fare,
+        sample: false,
+        latitude: match.latitude,
+        longitude: match.longitude,
+        phone: match.phone,
+        photo: match.photo,
+      };
+      this.bus.toRide(rideId, 'ride:driver', card);
+      this.bus.toUser(ride.customerId, 'ride:driver', card);
+    }
+
+    this.log.log(
+      `dispatch ${rideId}: offered to ${top.length} driver(s) within ${radiusKm}km`,
+    );
+    return { offered: top.length, reason: 'ok' as const };
   }
 
   /** Open or join an Along / batch pool */
@@ -325,17 +523,25 @@ export class RidesService {
   ) {
     const now = Date.now();
     const user = await this.store.findUserById(driverId);
+    const app = await this.store.getDriverApplication(driverId);
+    const bits = vehicleBits(app?.vehicle);
+    const photoFromApp = String(
+      (app?.profile as { photoUrl?: string } | undefined)?.photoUrl || '',
+    ).trim();
     const next = await this.get(id);
+    if (next.status !== 'searching' && next.driverId && next.driverId !== driverId) {
+      throw new BadRequestException('Ride already assigned');
+    }
     next.driverId = driverId;
     next.driver = {
       id: driverId,
       name: opts?.driverName || user?.name || 'Driver',
       phone: opts?.driverPhone || user?.phone || '',
       rating: opts?.rating,
-      vehicle: opts?.vehicle,
-      plate: opts?.plate,
-      colour: opts?.colour,
-      photo: opts?.photo,
+      vehicle: opts?.vehicle || bits.label,
+      plate: opts?.plate || bits.plate || undefined,
+      colour: opts?.colour || bits.colour || undefined,
+      photo: opts?.photo || photoFromApp || undefined,
     };
     next.status = 'assigned';
     next.assignedAt = now;
@@ -660,6 +866,7 @@ export class RidesService {
       customerLocation: ride.customerLocation,
       statusHistory: ride.statusHistory,
       fareHistory: ride.fareHistory,
+      chat: ride.chat,
       createdAt: ride.createdAt,
       assignedAt: ride.assignedAt,
       arrivedAt: ride.arrivedAt,

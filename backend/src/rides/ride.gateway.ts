@@ -75,6 +75,8 @@ export class RideGateway
       longitude?: number;
       heading?: number;
       city?: string;
+      maxDispatchRadiusKm?: number;
+      effectiveRadiusKm?: number;
     },
   ) {
     const user = this.requireRole(client, 'driver');
@@ -83,6 +85,8 @@ export class RideGateway
       latitude: body?.latitude,
       longitude: body?.longitude,
       heading: body?.heading,
+      maxDispatchRadiusKm: body?.maxDispatchRadiusKm,
+      effectiveRadiusKm: body?.effectiveRadiusKm ?? body?.maxDispatchRadiusKm,
     });
     return { ok: true };
   }
@@ -193,6 +197,13 @@ export class RideGateway
           rideId,
         });
       }
+
+      // Customer often joins after create() already dispatched into empty rooms —
+      // re-run pickup-centered matching so ride:driver / ride:offer land on live sockets.
+      if (ride.status === 'searching' && ride.customerId === user.sub) {
+        void this.rides.dispatchOffers(rideId, { radiusKm: 6 });
+      }
+
       return { ok: true, status: ride.status };
     } catch (error) {
       return {
@@ -243,6 +254,139 @@ export class RideGateway
         heading,
       });
       return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed',
+      };
+    }
+  }
+
+  /** Customer re-dispatch (extend search / fare top-up) for an existing ride. */
+  @SubscribeMessage('ride:request')
+  async onRideRequest(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody()
+    body: {
+      id?: string;
+      fare?: number;
+      radiusKm?: number;
+      extendedSearch?: boolean;
+      driverPriced?: boolean;
+    },
+  ) {
+    const user = this.requireRole(client, 'customer');
+    const rideId = String(body?.id || '').trim();
+    if (!rideId) return { ok: false, error: 'Missing ride id' };
+    try {
+      const ride = await this.rides.get(rideId);
+      if (ride.customerId !== user.sub) return { ok: false, error: 'Forbidden' };
+      if (ride.status !== 'searching') {
+        return { ok: false, error: 'Ride is not searching', status: ride.status };
+      }
+      const fare = Number(body?.fare);
+      if (Number.isFinite(fare) && fare > ride.fare) {
+        await this.rides.updateFare(rideId, fare, 'customer', 'Fare top-up');
+      }
+      await client.join(`ride:${rideId}`);
+      const result = await this.rides.dispatchOffers(rideId, {
+        radiusKm: Number(body?.radiusKm) || 6,
+        driverPriced: Boolean(body?.driverPriced || body?.extendedSearch),
+      });
+      return { ok: true, ...result };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed',
+      };
+    }
+  }
+
+  @SubscribeMessage('ride:accept')
+  async onRideAccept(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { id?: string; fare?: number },
+  ) {
+    const user = this.requireRole(client, 'driver');
+    const rideId = String(body?.id || '').trim();
+    if (!rideId) return { ok: false, error: 'Missing ride id' };
+    try {
+      const presence = await this.drivers.me(user.sub);
+      const fare = Number(body?.fare);
+      const assigned = await this.rides.assign(rideId, user.sub, {
+        fare: Number.isFinite(fare) && fare > 0 ? fare : undefined,
+        latitude:
+          presence.latitude != null && Number.isFinite(presence.latitude)
+            ? presence.latitude
+            : undefined,
+        longitude:
+          presence.longitude != null && Number.isFinite(presence.longitude)
+            ? presence.longitude
+            : undefined,
+      });
+      await client.join(`ride:${rideId}`);
+
+      const card = {
+        id: user.sub,
+        name: assigned.driver?.name || 'Driver',
+        rating: assigned.driver?.rating ?? 4.9,
+        vehicle: assigned.driver?.vehicle || 'Car',
+        colour: assigned.driver?.colour || 'Car',
+        plate: assigned.driver?.plate || '',
+        fare: assigned.fare,
+        sample: false,
+        latitude: assigned.driverLocation?.latitude ?? presence.latitude ?? 0,
+        longitude: assigned.driverLocation?.longitude ?? presence.longitude ?? 0,
+        phone: assigned.driver?.phone || '',
+        photo: assigned.driver?.photo,
+      };
+      this.bus.toRide(rideId, 'ride:driver', card);
+      this.bus.toUser(assigned.customerId, 'ride:driver', card);
+      this.bus.toRide(rideId, 'ride:stage', {
+        stage: 'assigned',
+        id: rideId,
+      });
+      this.bus.toUser(assigned.customerId, 'ride:stage', {
+        stage: 'assigned',
+        id: rideId,
+      });
+
+      const live = await this.drivers.liveForAdmin(undefined, true);
+      for (const row of live) {
+        if (row.driverId === user.sub) continue;
+        this.bus.toDriver(row.driverId, 'ride:taken', { id: rideId });
+      }
+      return { ok: true, status: assigned.status };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed',
+      };
+    }
+  }
+
+  @SubscribeMessage('ride:cancel')
+  async onRideCancel(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { id?: string },
+  ) {
+    const user = this.requireUser(client);
+    const rideId = String(body?.id || '').trim();
+    if (!rideId) return { ok: false, error: 'Missing ride id' };
+    try {
+      const ride = await this.rides.get(rideId);
+      const allowed =
+        user.role === 'admin' ||
+        ride.customerId === user.sub ||
+        ride.driverId === user.sub;
+      if (!allowed) return { ok: false, error: 'Forbidden' };
+      const next = await this.rides.stage(rideId, 'cancelled', user.role === 'driver' ? 'driver' : 'customer');
+      this.bus.toRide(rideId, 'ride:cancelled', { id: rideId });
+      this.bus.toUser(ride.customerId, 'ride:cancelled', { id: rideId });
+      if (ride.driverId) {
+        this.bus.toDriver(ride.driverId, 'ride:cancelled', { id: rideId });
+      }
+      return { ok: true, status: next.status };
     } catch (error) {
       return {
         ok: false,
@@ -350,7 +494,12 @@ export class RideGateway
 
   private requireRole(client: AuthedSocket, role: JwtPayload['role']) {
     const user = this.requireUser(client);
-    if (user.role !== role) throw new Error('Forbidden');
+    if (user.role !== role) {
+      // Return quietly — throwing floods Nest logs when a customer JWT hits driver events.
+      throw Object.assign(new Error(`Forbidden role=${user.role} need=${role}`), {
+        status: 'error',
+      });
+    }
     return user;
   }
 }

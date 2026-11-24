@@ -24,4 +24,10 @@ export class RideBus {
     if (!driverId || !this.server) return;
     this.server.to(`driver:${driverId}`).emit(event, payload);
   }
+
+  /** Admin desk room for live support inbox updates. */
+  toDesk(event: string, payload: unknown) {
+    if (!this.server) return;
+    this.server.to('support:desk').emit(event, payload);
+  }
 }

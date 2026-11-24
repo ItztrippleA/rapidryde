@@ -245,6 +245,23 @@ CREATE TABLE IF NOT EXISTS mail_outbox (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS mail_outbox_created_idx ON mail_outbox (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS support_threads (
+  id TEXT PRIMARY KEY,
+  party TEXT NOT NULL,
+  party_id TEXT NOT NULL,
+  party_name TEXT NOT NULL DEFAULT '',
+  party_phone TEXT NOT NULL DEFAULT '',
+  city TEXT NOT NULL DEFAULT 'abuja',
+  subject TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'waiting',
+  messages JSONB NOT NULL DEFAULT '[]',
+  updated_at BIGINT NOT NULL,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS support_updated_idx ON support_threads (updated_at DESC);
+CREATE INDEX IF NOT EXISTS support_party_idx ON support_threads (party, party_id);
+CREATE INDEX IF NOT EXISTS support_status_idx ON support_threads (status);
 `;
 
 @Injectable()
@@ -1382,6 +1399,107 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       note: (row.note as string) || null,
       source: (row.source as string) || 'landing',
       status: (row.status as string) || 'new',
+      createdAt: Number(row.created_at),
+    };
+  }
+
+  async findOpenSupportThread(party: string, partyId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM support_threads
+       WHERE party = $1 AND party_id = $2 AND status <> 'closed'
+       ORDER BY updated_at DESC LIMIT 1`,
+      [party, partyId],
+    );
+    return rows[0] ? this.mapSupportThread(rows[0]) : null;
+  }
+
+  async getSupportThread(id: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM support_threads WHERE id = $1 LIMIT 1`,
+      [id],
+    );
+    return rows[0] ? this.mapSupportThread(rows[0]) : null;
+  }
+
+  async listSupportThreads(opts?: {
+    party?: string;
+    status?: string;
+    limit?: number;
+  }) {
+    const limit = Math.min(Math.max(opts?.limit || 100, 1), 300);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (opts?.party) {
+      params.push(opts.party);
+      where.push(`party = $${params.length}`);
+    }
+    if (opts?.status) {
+      params.push(opts.status);
+      where.push(`status = $${params.length}`);
+    }
+    params.push(limit);
+    const sql = `SELECT * FROM support_threads
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY updated_at DESC
+      LIMIT $${params.length}`;
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((row) => this.mapSupportThread(row));
+  }
+
+  async upsertSupportThread(thread: {
+    id: string;
+    party: string;
+    partyId: string;
+    partyName: string;
+    partyPhone: string;
+    city: string;
+    subject: string;
+    status: string;
+    messages: unknown[];
+    updatedAt: number;
+    createdAt: number;
+  }) {
+    await this.pool.query(
+      `INSERT INTO support_threads (
+        id, party, party_id, party_name, party_phone, city, subject, status, messages, updated_at, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
+      ON CONFLICT (id) DO UPDATE SET
+        party_name = EXCLUDED.party_name,
+        party_phone = EXCLUDED.party_phone,
+        city = EXCLUDED.city,
+        subject = EXCLUDED.subject,
+        status = EXCLUDED.status,
+        messages = EXCLUDED.messages,
+        updated_at = EXCLUDED.updated_at`,
+      [
+        thread.id,
+        thread.party,
+        thread.partyId,
+        thread.partyName,
+        thread.partyPhone,
+        thread.city,
+        thread.subject,
+        thread.status,
+        JSON.stringify(thread.messages || []),
+        thread.updatedAt,
+        thread.createdAt,
+      ],
+    );
+    return this.getSupportThread(thread.id);
+  }
+
+  private mapSupportThread(row: QueryResultRow) {
+    return {
+      id: row.id as string,
+      party: row.party as 'driver' | 'customer',
+      partyId: row.party_id as string,
+      partyName: (row.party_name as string) || '',
+      partyPhone: (row.party_phone as string) || '',
+      city: (row.city as string) || 'abuja',
+      subject: (row.subject as string) || '',
+      status: (row.status as 'waiting' | 'open' | 'closed') || 'waiting',
+      messages: Array.isArray(row.messages) ? row.messages : [],
+      updatedAt: Number(row.updated_at),
       createdAt: Number(row.created_at),
     };
   }

@@ -164,6 +164,50 @@ export class DriversService {
     return this.store.listLiveDrivers({ city, onlineOnly });
   }
 
+  /** Customer map: available online drivers near a pickup / current location. */
+  async nearbyForCustomer(opts: {
+    latitude: number;
+    longitude: number;
+    radiusKm?: number;
+    city?: string;
+  }) {
+    const radiusKm = Math.max(1, Math.min(40, Number(opts.radiusKm) || 6));
+    const hub = { latitude: opts.latitude, longitude: opts.longitude };
+    let live = await this.store.listLiveDrivers({
+      city: opts.city || undefined,
+      onlineOnly: true,
+    });
+    if (live.length === 0 && opts.city) {
+      live = await this.store.listLiveDrivers({ onlineOnly: true });
+    }
+    return live
+      .filter(
+        (driver) =>
+          driver.status === 'available' &&
+          driver.latitude != null &&
+          driver.longitude != null &&
+          Number.isFinite(driver.latitude) &&
+          Number.isFinite(driver.longitude),
+      )
+      .map((driver) => {
+        const km = kmBetween(
+          { latitude: driver.latitude!, longitude: driver.longitude! },
+          hub,
+        );
+        return {
+          id: driver.driverId,
+          latitude: driver.latitude!,
+          longitude: driver.longitude!,
+          heading: driver.heading ?? 0,
+          km: Math.round(km * 10) / 10,
+          name: driver.name || 'Driver',
+        };
+      })
+      .filter((driver) => driver.km <= radiusKm + 0.05)
+      .sort((a, b) => a.km - b.km)
+      .slice(0, 20);
+  }
+
   /** Customers currently searching, with nearest available drivers and range gaps. */
   async lookingForRide(city?: string) {
     const rides = await this.store.listRides({

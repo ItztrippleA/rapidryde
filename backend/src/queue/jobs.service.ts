@@ -205,8 +205,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         );
         return;
       }
-      case 'notify.push':
       case 'dispatch.match':
+        // Matching runs inline from RidesService.create / ride:request (avoids Queue↔Rides cycle).
+        return;
+      case 'notify.push':
       case 'kyc.verify':
       case 'payouts.transfer':
       case 'ledger.settle':

@@ -119,12 +119,27 @@ export class AuthService implements OnModuleInit {
   }
 
   async login(phone: string, password: string, role?: Role) {
-    const candidates = role
-      ? [await this.store.findUserByPhoneAndRole(phone, role)].filter(
-          (user): user is StoredUser => Boolean(user),
-        )
-      : await this.store.findUsersByPhone(phone);
+    if (role) {
+      const forRole = await this.store.findUserByPhoneAndRole(phone, role);
+      if (!forRole) {
+        const others = await this.store.findUsersByPhone(phone);
+        if (others.length) {
+          throw new UnauthorizedException(
+            `No ${role} account for this number — create one in the ${role} app.`,
+          );
+        }
+        throw new UnauthorizedException('Bad credentials');
+      }
+      if (
+        !forRole.passwordHash ||
+        !compareSync(password, forRole.passwordHash)
+      ) {
+        throw new UnauthorizedException('Bad credentials');
+      }
+      return this.issue(forRole);
+    }
 
+    const candidates = await this.store.findUsersByPhone(phone);
     const user = candidates.find(
       (candidate) =>
         Boolean(candidate.passwordHash) &&

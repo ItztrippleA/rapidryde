@@ -203,6 +203,29 @@ export class DriversController {
     return this.drivers.savePreferences(req.user.sub, body);
   }
 
+  /** Rider map: available drivers near pickup / current location. */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('customer', 'admin')
+  @Get('drivers/nearby')
+  nearby(
+    @Query('lat') lat?: string,
+    @Query('lng') lng?: string,
+    @Query('radiusKm') radiusKm?: string,
+    @Query('city') city?: string,
+  ) {
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return [];
+    }
+    return this.drivers.nearbyForCustomer({
+      latitude,
+      longitude,
+      radiusKm: radiusKm != null ? Number(radiusKm) : undefined,
+      city,
+    });
+  }
+
   /** Admin fleet map — live drivers with lat/lng + duty status */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')

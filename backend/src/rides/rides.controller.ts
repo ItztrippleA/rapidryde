@@ -133,6 +133,13 @@ class CreateRideDto {
   @IsOptional()
   @IsString()
   joinPoolId?: string;
+
+  /** Search radius around pickup (km). Defaults to 6 on the server. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  radiusKm?: number;
 }
 
 class AssignDto {

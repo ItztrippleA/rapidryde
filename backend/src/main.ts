@@ -17,8 +17,9 @@ async function bootstrap() {
     }),
   );
   const port = Number(process.env.PORT || 4000);
-  await app.listen(port, '0.0.0.0');
+  // Dual-stack (::) so "localhost" via IPv6 works in React Native / simulators.
+  await app.listen(port, '::');
 
-  console.log(`Rapyd Ryd API on http://0.0.0.0:${port}`);
+  console.log(`Rapyd Ryd API on http://localhost:${port}`);
 }
 void bootstrap();

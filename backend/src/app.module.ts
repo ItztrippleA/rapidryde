@@ -13,6 +13,8 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 import { StorageModule } from './storage/storage.module';
 import { UsersModule } from './users/users.module';
 import { WaitlistModule } from './waitlist/waitlist.module';
+import { SupportModule } from './support/support.module';
+import { PresenceModule } from './presence/presence.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -31,6 +33,8 @@ import { HealthController } from './health.controller';
     PlacesModule,
     RoutingModule,
     WaitlistModule,
+    SupportModule,
+    PresenceModule,
   ],
   controllers: [HealthController],
 })
