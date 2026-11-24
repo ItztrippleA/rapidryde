@@ -128,6 +128,14 @@ CREATE TABLE IF NOT EXISTS driver_presence (
 CREATE INDEX IF NOT EXISTS driver_presence_status_idx ON driver_presence (status);
 CREATE INDEX IF NOT EXISTS driver_presence_city_idx ON driver_presence (city);
 CREATE INDEX IF NOT EXISTS driver_presence_online_idx ON driver_presence (online);
+
+CREATE TABLE IF NOT EXISTS ride_declines (
+  driver_id TEXT NOT NULL,
+  ride_id TEXT NOT NULL,
+  declined_at BIGINT NOT NULL,
+  PRIMARY KEY (driver_id, ride_id)
+);
+CREATE INDEX IF NOT EXISTS ride_declines_ride_idx ON ride_declines (ride_id);
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS max_dispatch_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS expand_radius_when_idle BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS effective_radius_km DOUBLE PRECISION NOT NULL DEFAULT 10;
@@ -644,6 +652,67 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     return this.mapDriverApplication(rows[0]);
   }
 
+  async listDriverApplications(opts?: {
+    status?: string;
+    limit?: number;
+  }): Promise<
+    Array<{
+      application: DriverApplication;
+      user: StoredUser;
+    }>
+  > {
+    const limit = Math.min(500, Math.max(1, opts?.limit ?? 200));
+    const params: unknown[] = [];
+    const clauses: string[] = [`u.role = 'driver'`];
+    if (opts?.status) {
+      params.push(opts.status);
+      clauses.push(`da.status = $${params.length}`);
+    }
+    params.push(limit);
+    const { rows } = await this.pool.query(
+      `SELECT da.*,
+              u.id AS u_id, u.role AS u_role, u.phone AS u_phone, u.email AS u_email,
+              u.name AS u_name, u.first_name AS u_first_name, u.last_name AS u_last_name,
+              u.middle_name AS u_middle_name, u.public_code AS u_public_code,
+              u.status AS u_status, u.city AS u_city, u.state AS u_state,
+              u.address AS u_address, u.lga AS u_lga, u.dob AS u_dob,
+              u.gender AS u_gender, u.photo_url AS u_photo_url,
+              u.identity AS u_identity, u.created_at AS u_created_at,
+              u.updated_at AS u_updated_at
+       FROM driver_applications da
+       INNER JOIN users u ON u.id = da.user_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY COALESCE(da.submitted_at, da.updated_at) DESC
+       LIMIT $${params.length}`,
+      params,
+    );
+    return rows.map((row) => ({
+      application: this.mapDriverApplication(row),
+      user: {
+        id: row.u_id,
+        role: row.u_role,
+        phone: row.u_phone,
+        email: row.u_email || undefined,
+        name: row.u_name || undefined,
+        firstName: row.u_first_name || undefined,
+        lastName: row.u_last_name || undefined,
+        middleName: row.u_middle_name || undefined,
+        publicCode: row.u_public_code || undefined,
+        status: row.u_status,
+        city: row.u_city || undefined,
+        state: row.u_state || undefined,
+        address: row.u_address || undefined,
+        lga: row.u_lga || undefined,
+        dob: row.u_dob || undefined,
+        gender: row.u_gender || undefined,
+        photoUrl: row.u_photo_url || undefined,
+        identity: row.u_identity || undefined,
+        createdAt: Number(row.u_created_at),
+        updatedAt: row.u_updated_at ? Number(row.u_updated_at) : undefined,
+      } satisfies StoredUser,
+    }));
+  }
+
   async upsertDriverApplication(app: DriverApplication) {
     await this.pool.query(
       `INSERT INTO driver_applications (
@@ -1061,6 +1130,31 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     );
     if (!rows[0]) return null;
     return this.mapPresence(rows[0]);
+  }
+
+  async noteRideDecline(driverId: string, rideId: string) {
+    await this.pool.query(
+      `INSERT INTO ride_declines (driver_id, ride_id, declined_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (driver_id, ride_id) DO UPDATE SET declined_at = EXCLUDED.declined_at`,
+      [driverId, rideId, Date.now()],
+    );
+  }
+
+  async driverDeclinedRide(driverId: string, rideId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM ride_declines WHERE driver_id = $1 AND ride_id = $2 LIMIT 1`,
+      [driverId, rideId],
+    );
+    return Boolean(rows[0]);
+  }
+
+  async declinedRideIdsForDriver(driverId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT ride_id FROM ride_declines WHERE driver_id = $1 ORDER BY declined_at DESC LIMIT 80`,
+      [driverId],
+    );
+    return rows.map((row) => row.ride_id as string);
   }
 
   async listLiveDrivers(opts?: { city?: string; onlineOnly?: boolean }) {

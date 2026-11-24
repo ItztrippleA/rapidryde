@@ -1,0 +1,86 @@
+{
+  "cli": {
+    "version": ">= 24.7.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development",
+      "android": {
+        "gradleCommand": ":app:assembleDebug",
+        "buildType": "apk"
+      }
+    },
+    "development-simulator": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true,
+        "buildConfiguration": "Debug"
+      },
+      "env": {
+        "EXPO_USE_FAST_FS": "true"
+      },
+      "channel": "development-simulator"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://backend-production-f8f5704e.up.railway.app",
+        "EXPO_PUBLIC_RIDE_URL": "https://backend-production-f8f5704e.up.railway.app"
+      },
+      "channel": "preview"
+    },
+    "preview2": {
+      "android": {
+        "gradleCommand": ":app:assembleRelease",
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://backend-production-f8f5704e.up.railway.app",
+        "EXPO_PUBLIC_RIDE_URL": "https://backend-production-f8f5704e.up.railway.app"
+      },
+      "channel": "preview2"
+    },
+    "preview3": {
+      "developmentClient": true,
+      "channel": "preview3",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://backend-production-f8f5704e.up.railway.app",
+        "EXPO_PUBLIC_RIDE_URL": "https://backend-production-f8f5704e.up.railway.app"
+      }
+    },
+    "preview4": {
+      "ios": {
+        "simulator": true
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://backend-production-f8f5704e.up.railway.app",
+        "EXPO_PUBLIC_RIDE_URL": "https://backend-production-f8f5704e.up.railway.app"
+      },
+      "channel": "preview4"
+    },
+    "production": {
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://backend-production-f8f5704e.up.railway.app",
+        "EXPO_PUBLIC_RIDE_URL": "https://backend-production-f8f5704e.up.railway.app"
+      },
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

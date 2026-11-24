@@ -84,6 +84,8 @@ const CHAT_CAP = 200;
 @Injectable()
 export class RidesService {
   private readonly log = new Logger(RidesService.name);
+  /** driverId → rideIds they declined — skip re-offer until a new ride is placed. */
+  private readonly declinedByDriver = new Map<string, Set<string>>();
 
   constructor(
     private readonly store: PgStore,
@@ -95,6 +97,36 @@ export class RidesService {
     private readonly waiting: WaitingService,
     private readonly bus: RideBus,
   ) {}
+
+  /** Record a driver decline so this ride id is not pushed to them again. */
+  async noteDriverDecline(driverId: string, rideId: string) {
+    const id = rideId.trim();
+    const driver = driverId.trim();
+    if (!id || !driver) return { ok: false as const };
+    let set = this.declinedByDriver.get(driver);
+    if (!set) {
+      set = new Set();
+      this.declinedByDriver.set(driver, set);
+    }
+    set.add(id);
+    await this.store.noteRideDecline(driver, id);
+    this.log.debug(`driver ${driver} declined ${id}`);
+    return { ok: true as const, rideId: id };
+  }
+
+  private async driverDeclined(driverId: string, rideId: string) {
+    if (this.declinedByDriver.get(driverId)?.has(rideId)) return true;
+    const stored = await this.store.driverDeclinedRide(driverId, rideId);
+    if (stored) {
+      let set = this.declinedByDriver.get(driverId);
+      if (!set) {
+        set = new Set();
+        this.declinedByDriver.set(driverId, set);
+      }
+      set.add(rideId);
+    }
+    return stored;
+  }
 
   async create(input: CreateRideInput) {
     const waypoints = (input.stops || []).map((stop) => ({
@@ -290,11 +322,18 @@ export class RidesService {
     };
 
     const matches: Match[] = [];
+    let nearestKm: number | null = null;
+    let nearestId: string | null = null;
     for (const driver of available) {
+      if (await this.driverDeclined(driver.driverId, rideId)) continue;
       const km = kmBetween(
         { latitude: driver.latitude!, longitude: driver.longitude! },
         pickup,
       );
+      if (nearestKm == null || km < nearestKm) {
+        nearestKm = km;
+        nearestId = driver.driverId;
+      }
       const driverRadius = Number(
         driver.effectiveRadiusKm ?? driver.maxDispatchRadiusKm ?? 10,
       );
@@ -345,7 +384,9 @@ export class RidesService {
 
     if (top.length === 0) {
       this.log.debug(
-        `dispatch ${rideId}: no drivers within ${radiusKm}km (live=${live.length} available=${available.length})`,
+        `dispatch ${rideId}: no drivers within ${radiusKm}km (live=${live.length} available=${available.length} nearest=${
+          nearestKm != null ? `${nearestKm.toFixed(1)}km` : 'n/a'
+        }${nearestId ? ` ${nearestId}` : ''} pickup=${pickup.latitude.toFixed(5)},${pickup.longitude.toFixed(5)})`,
       );
       this.bus.toRide(rideId, 'ride:none', { id: rideId });
       this.bus.toUser(ride.customerId, 'ride:none', { id: rideId });
@@ -377,30 +418,192 @@ export class RidesService {
         note: ride.note || '',
         expiresAt,
         fareTalk: opts?.driverPriced ? 'waiting' : 'agreed',
+        classId: ride.classId || 'ryde',
+        classLabel: ride.classLabel || 'Ryde',
+        along: Boolean(ride.along) || ride.classId === 'along',
       });
 
-      const card = {
-        id: match.driverId,
-        name: match.name,
-        rating: 4.9,
-        vehicle: match.vehicleLabel,
-        colour: match.colour,
-        plate: match.plate,
-        fare: ride.fare,
-        sample: false,
-        latitude: match.latitude,
-        longitude: match.longitude,
-        phone: match.phone,
-        photo: match.photo,
-      };
-      this.bus.toRide(rideId, 'ride:driver', card);
-      this.bus.toUser(ride.customerId, 'ride:driver', card);
+      // Do not emit ride:driver yet — customer only sees a bid after the driver
+      // adjusts fare (ride:bid) or accepts (assign → ride:driver).
     }
 
     this.log.log(
-      `dispatch ${rideId}: offered to ${top.length} driver(s) within ${radiusKm}km`,
+      `dispatch ${rideId}: offered to ${top.length} driver(s) within ${radiusKm}km class=${ride.classId || 'ryde'}`,
     );
     return { offered: top.length, reason: 'ok' as const };
+  }
+
+  /**
+   * When a driver connects / goes online after dispatch already ran into an empty
+   * socket room, push any searching rides near them as ride:offer.
+   */
+  async offerOpenRidesToDriver(
+    driverId: string,
+    opts?: { radiusKm?: number },
+  ) {
+    const presence = await this.drivers.me(driverId);
+    if (
+      !presence.online ||
+      presence.latitude == null ||
+      presence.longitude == null ||
+      !Number.isFinite(presence.latitude) ||
+      !Number.isFinite(presence.longitude)
+    ) {
+      return { offered: 0, reason: 'offline_or_no_coords' as const };
+    }
+    const here = {
+      latitude: presence.latitude,
+      longitude: presence.longitude,
+    };
+    const driverRadius = Number(
+      presence.effectiveRadiusKm ?? presence.maxDispatchRadiusKm ?? 10,
+    );
+    const radiusKm = Math.max(
+      1,
+      Math.min(40, Number(opts?.radiusKm) || Math.max(driverRadius, 6)),
+    );
+    const rides = await this.store.listRides({
+      status: 'searching',
+      limit: 40,
+    });
+    let offered = 0;
+    const expiresAt = Date.now() + 45_000;
+    const declinedIds = new Set(await this.store.declinedRideIdsForDriver(driverId));
+    for (const id of declinedIds) {
+      let set = this.declinedByDriver.get(driverId);
+      if (!set) {
+        set = new Set();
+        this.declinedByDriver.set(driverId, set);
+      }
+      set.add(id);
+    }
+    for (const ride of rides) {
+      if (declinedIds.has(ride.id) || this.declinedByDriver.get(driverId)?.has(ride.id)) continue;
+      const pickup = {
+        latitude: ride.pickup.latitude,
+        longitude: ride.pickup.longitude,
+      };
+      const km = kmBetween(here, pickup);
+      if (km > radiusKm + 0.05) continue;
+      if (km > driverRadius + 0.05) continue;
+
+      const app = await this.store.getDriverApplication(driverId);
+      const bits = vehicleBits(app?.vehicle);
+      const photo = String(
+        (app?.profile as { photoUrl?: string } | undefined)?.photoUrl || '',
+      ).trim();
+      const pickupMin = Math.max(1, Math.round((km / 25) * 60));
+      const user = await this.store.findUserById(driverId);
+      const driverName = user?.name || bits.label || 'Driver';
+
+      this.bus.toDriver(driverId, 'ride:offer', {
+        id: ride.id,
+        passenger: ride.customer.name || 'Rider',
+        rating: 4.9,
+        pickup: ride.pickup.label,
+        dropoff: ride.dropoff.label,
+        pickupLat: ride.pickup.latitude,
+        pickupLng: ride.pickup.longitude,
+        dropLat: ride.dropoff.latitude,
+        dropLng: ride.dropoff.longitude,
+        pickupKm: Math.round(km * 10) / 10,
+        pickupMin,
+        tripKm: ride.plannedKm,
+        tripMin: ride.plannedMinutes,
+        fare: ride.fare,
+        earnings: ride.earnings,
+        quotedFare: ride.quoted,
+        payment: paymentLabel(ride.payment),
+        note: ride.note || '',
+        expiresAt,
+        fareTalk: 'agreed' as const,
+        classId: ride.classId || 'ryde',
+        classLabel: ride.classLabel || 'Ryde',
+        along: Boolean(ride.along) || ride.classId === 'along',
+      });
+
+      // Offer to driver only — customer waits for accept or fare bid.
+      offered += 1;
+    }
+    if (offered > 0) {
+      this.log.log(
+        `catch-up ${driverId}: offered ${offered} open ride(s) within ${radiusKm}km`,
+      );
+    }
+    return { offered, reason: offered ? ('ok' as const) : ('none_nearby' as const) };
+  }
+
+  /** HTTP poll mirror of open offers near this driver (socket-miss fallback). */
+  async pendingOffersForDriver(driverId: string) {
+    const presence = await this.drivers.me(driverId);
+    if (
+      presence.latitude == null ||
+      presence.longitude == null ||
+      !Number.isFinite(presence.latitude) ||
+      !Number.isFinite(presence.longitude)
+    ) {
+      return [] as const;
+    }
+    const here = {
+      latitude: presence.latitude,
+      longitude: presence.longitude,
+    };
+    const driverRadius = Number(
+      presence.effectiveRadiusKm ?? presence.maxDispatchRadiusKm ?? 10,
+    );
+    const radiusKm = Math.max(driverRadius, 6);
+    const rides = await this.store.listRides({
+      status: 'searching',
+      limit: 40,
+    });
+    const expiresAt = Date.now() + 45_000;
+    const declinedIds = new Set(await this.store.declinedRideIdsForDriver(driverId));
+    for (const id of declinedIds) {
+      let set = this.declinedByDriver.get(driverId);
+      if (!set) {
+        set = new Set();
+        this.declinedByDriver.set(driverId, set);
+      }
+      set.add(id);
+    }
+    return rides
+      .map((ride) => {
+        if (declinedIds.has(ride.id)) return null;
+        const km = kmBetween(here, {
+          latitude: ride.pickup.latitude,
+          longitude: ride.pickup.longitude,
+        });
+        if (km > radiusKm + 0.05) return null;
+        const pickupMin = Math.max(1, Math.round((km / 25) * 60));
+        return {
+          id: ride.id,
+          passenger: ride.customer.name || 'Rider',
+          rating: 4.9,
+          pickup: ride.pickup.label,
+          dropoff: ride.dropoff.label,
+          pickupLat: ride.pickup.latitude,
+          pickupLng: ride.pickup.longitude,
+          dropLat: ride.dropoff.latitude,
+          dropLng: ride.dropoff.longitude,
+          pickupKm: Math.round(km * 10) / 10,
+          pickupMin,
+          tripKm: ride.plannedKm,
+          tripMin: ride.plannedMinutes,
+          fare: ride.fare,
+          earnings: ride.earnings,
+          quotedFare: ride.quoted,
+          payment: paymentLabel(ride.payment),
+          note: ride.note || '',
+          expiresAt,
+          fareTalk: 'agreed' as const,
+          classId: ride.classId || 'ryde',
+          classLabel: ride.classLabel || 'Ryde',
+          along: Boolean(ride.along) || ride.classId === 'along',
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .sort((a, b) => a.pickupKm - b.pickupKm)
+      .slice(0, 7);
   }
 
   /** Open or join an Along / batch pool */
@@ -757,6 +960,71 @@ export class RidesService {
     next.updatedAt = now;
     await this.store.upsertRide(next);
     return next;
+  }
+
+  /** Driver fare adjust while searching — notify customer as a bid card. */
+  async publishDriverBid(
+    rideId: string,
+    driverId: string,
+    fare: number,
+    opts?: { quoted?: number },
+  ) {
+    const ride = await this.get(rideId);
+    if (ride.status !== 'searching' && ride.status !== 'assigned') {
+      throw new BadRequestException('Ride not open for bidding');
+    }
+    if (await this.driverDeclined(driverId, rideId)) {
+      throw new BadRequestException('You declined this ride');
+    }
+    const quoted = Number(opts?.quoted);
+    const next = await this.updateFare(
+      rideId,
+      fare,
+      'driver',
+      Number.isFinite(quoted) && fare > quoted ? 'Driver bid' : 'Driver fare',
+    );
+    const user = await this.store.findUserById(driverId);
+    const presence = await this.drivers.me(driverId);
+    const app = await this.store.getDriverApplication(driverId);
+    const bits = vehicleBits(app?.vehicle);
+    const photo = String(
+      (app?.profile as { photoUrl?: string } | undefined)?.photoUrl || '',
+    ).trim();
+    const raised =
+      Number.isFinite(quoted) && quoted > 0
+        ? fare > quoted
+        : fare > next.quoted;
+    const card = {
+      id: driverId,
+      name: user?.name || 'Driver',
+      rating: 4.9,
+      vehicle: bits.label,
+      colour: bits.colour,
+      plate: bits.plate,
+      fare: next.fare,
+      sample: false,
+      latitude: presence.latitude ?? 0,
+      longitude: presence.longitude ?? 0,
+      phone: user?.phone || '',
+      photo: photo || undefined,
+      classId: next.classId || 'ryde',
+      classLabel: next.classLabel || 'Ryde',
+      bid: true,
+      fareTalk: raised ? ('waiting' as const) : ('agreed' as const),
+    };
+    this.bus.toRide(rideId, 'ride:bid', card);
+    this.bus.toUser(ride.customerId, 'ride:bid', card);
+    this.bus.toRide(rideId, 'ride:fare', {
+      id: rideId,
+      fare: next.fare,
+      quoted: next.quoted,
+    });
+    this.bus.toUser(ride.customerId, 'ride:fare', {
+      id: rideId,
+      fare: next.fare,
+      quoted: next.quoted,
+    });
+    return { ok: true as const, fare: next.fare, quoted: next.quoted };
   }
 
   async pingLocation(

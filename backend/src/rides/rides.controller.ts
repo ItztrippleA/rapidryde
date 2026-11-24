@@ -291,6 +291,14 @@ export class RidesController {
     return this.rides.listPools(city);
   }
 
+  /** Driver poll: open searching rides near me (socket miss / reconnect fallback). */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('driver')
+  @Get('pending-offers')
+  pendingOffers(@Req() req: { user: JwtPayload }) {
+    return this.rides.pendingOffersForDriver(req.user.sub);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin', 'driver', 'customer')
   @Get()
@@ -312,6 +320,14 @@ export class RidesController {
   @Get('active/current')
   active(@Req() req: { user: JwtPayload }) {
     return this.rides.activeFor(req.user.sub, req.user.role);
+  }
+
+  /** Driver rejects an offer — that ride id will not be re-offered to them. */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('driver')
+  @Post(':id/decline')
+  decline(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
+    return this.rides.noteDriverDecline(req.user.sub, id);
   }
 
   @UseGuards(JwtAuthGuard)

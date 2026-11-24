@@ -151,4 +151,51 @@ export class UsersService {
   getDriverApplication(userId: string) {
     return this.store.getDriverApplication(userId);
   }
+
+  async listCustomers(limit = 300) {
+    const users = await this.store.listUsers({ role: 'customer' });
+    return users.slice(0, Math.min(500, Math.max(1, limit))).map((user) => {
+      const identity = user.identity || {};
+      const ninRaw = String(
+        identity.status || (identity.maskedNin ? 'pending' : 'missing'),
+      );
+      const ninStatus =
+        ninRaw === 'approved' || ninRaw === 'verified'
+          ? 'verified'
+          : ninRaw === 'rejected' || ninRaw === 'failed'
+            ? 'failed'
+            : 'pending';
+      const accountStatus =
+        user.status === 'active'
+          ? 'active'
+          : user.status === 'suspended' || user.status === 'closed'
+            ? user.status
+            : 'pending';
+      return {
+        id: user.id,
+        code: user.publicCode || null,
+        name:
+          user.name ||
+          [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+          user.phone,
+        phone: user.phone,
+        email: user.email || '',
+        city: String(user.city || 'abuja').toLowerCase(),
+        ninStatus,
+        identityStatus: identity.status || 'missing',
+        maskedNin: identity.maskedNin || null,
+        status: accountStatus,
+        rating: 5,
+        trips: 0,
+        wallet: 0,
+        rideSpend: 0,
+        joined: new Date(user.createdAt).toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
+        createdAt: user.createdAt,
+      };
+    });
+  }
 }

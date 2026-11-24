@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { alongDestination, kmBetween } from '../lib/geo';
 import { PgStore } from '../storage/pg-store';
+import type { DriverApplication } from '../storage/types';
 
 export type DriverDutyStatus = 'offline' | 'available' | 'on_trip' | 'busy';
 
@@ -390,5 +391,186 @@ export class DriversService {
       throw new NotFoundException('Driver not found');
     }
     return user;
+  }
+
+  private summarizeApplication(
+    application: DriverApplication,
+    user: Awaited<ReturnType<PgStore['findUserById']>>,
+  ) {
+    if (!user) return null;
+    const profile = (application.profile || {}) as Record<string, unknown>;
+    const identity = (application.identity || {}) as Record<string, unknown>;
+    const licence = (application.licence || {}) as Record<string, unknown>;
+    const vehicle = (application.vehicle || {}) as Record<string, unknown>;
+    const inspection = (application.inspection || {}) as Record<
+      string,
+      unknown
+    >;
+    const bank = (application.bank || {}) as Record<string, unknown>;
+    const emergency = (application.emergency || {}) as Record<string, unknown>;
+    const userIdentity = user.identity || {};
+    const name =
+      user.name ||
+      [user.firstName, user.middleName, user.lastName]
+        .filter(Boolean)
+        .join(' ') ||
+      String(profile.firstName || profile.name || 'Driver');
+
+    const ninRaw =
+      userIdentity.status ||
+      identity.status ||
+      (userIdentity.maskedNin || identity.maskedNin ? 'pending' : 'missing');
+    const ninStatus =
+      ninRaw === 'approved' || ninRaw === 'verified'
+        ? 'verified'
+        : ninRaw === 'rejected' || ninRaw === 'failed'
+          ? 'failed'
+          : 'pending';
+
+    const inspectionStatus = String(
+      inspection.status || inspection.result || 'not_scheduled',
+    );
+    const papers =
+      inspectionStatus === 'approved'
+        ? 'valid'
+        : inspectionStatus === 'rejected' || inspectionStatus === 'resubmit'
+          ? 'expired'
+          : 'expiring';
+
+    return {
+      id: user.id,
+      code: user.publicCode || null,
+      name,
+      phone: user.phone,
+      email: user.email || String(profile.email || ''),
+      city: String(user.city || profile.city || 'abuja').toLowerCase(),
+      accountStatus: user.status,
+      applicationStatus: application.status,
+      ninStatus,
+      papers,
+      submittedAt: application.submittedAt,
+      updatedAt: application.updatedAt,
+      profile: {
+        firstName: user.firstName || String(profile.firstName || ''),
+        middleName: user.middleName || String(profile.middleName || ''),
+        lastName: user.lastName || String(profile.lastName || ''),
+        dob: user.dob || String(profile.dob || ''),
+        gender: user.gender || String(profile.gender || ''),
+        address: user.address || String(profile.address || ''),
+        state: user.state || String(profile.state || ''),
+        lga: user.lga || String(profile.lga || ''),
+        photoUrl: user.photoUrl || String(profile.photoUri || profile.photoUrl || ''),
+      },
+      identity: {
+        maskedNin: userIdentity.maskedNin || identity.maskedNin || null,
+        status: userIdentity.status || identity.status || 'missing',
+        matchConfidence: userIdentity.matchConfidence ?? identity.matchConfidence ?? null,
+        failureReason: userIdentity.failureReason || identity.failureReason || null,
+        provider: userIdentity.provider || identity.provider || null,
+        slipAttached: Boolean(userIdentity.slipAttached || identity.slipAttached),
+        consented: Boolean(userIdentity.consented || identity.consented),
+        verifiedAt: userIdentity.verifiedAt || identity.verifiedAt || null,
+      },
+      licence: {
+        number: String(licence.number || licence.licenceNumber || ''),
+        expiry: String(licence.expiry || licence.licenceExpiry || ''),
+        status: String(licence.status || 'missing'),
+        failureReason: String(licence.failureReason || ''),
+        frontUri: String(licence.frontUri || ''),
+        backUri: String(licence.backUri || ''),
+      },
+      vehicle: {
+        make: String(vehicle.make || ''),
+        model: String(vehicle.model || vehicle.vehicle || ''),
+        plate: String(vehicle.plate || ''),
+        colour: String(vehicle.colour || vehicle.color || ''),
+        year: String(vehicle.year || ''),
+        category: String(vehicle.category || ''),
+        fuelType: String(vehicle.fuelType || ''),
+        classId: String(vehicle.classId || vehicle.class || 'ryde'),
+        insuranceExpiry: String(vehicle.insuranceExpiry || ''),
+        status: String(vehicle.status || 'missing'),
+      },
+      inspection: {
+        status: inspectionStatus,
+        scheduledAt: inspection.scheduledAt ?? null,
+        note: String(inspection.note || ''),
+      },
+      bank: {
+        bankName: String(bank.bankName || bank.name || ''),
+        maskedAccount: String(bank.maskedAccount || bank.accountLast4 || ''),
+        status: String(bank.status || 'missing'),
+      },
+      emergency: {
+        name: String(emergency.name || emergency.emergencyName || ''),
+        relationship: String(
+          emergency.relationship || emergency.emergencyRelationship || '',
+        ),
+        phone: String(emergency.phone || emergency.emergencyPhone || ''),
+      },
+      raw: application,
+    };
+  }
+
+  async listApplications(opts?: { status?: string; limit?: number }) {
+    const rows = await this.store.listDriverApplications(opts);
+    return rows
+      .map(({ application, user }) =>
+        this.summarizeApplication(application, user),
+      )
+      .filter(Boolean);
+  }
+
+  async getApplication(driverId: string) {
+    const user = await this.requireDriver(driverId);
+    const application = await this.store.getDriverApplication(driverId);
+    if (!application) {
+      throw new NotFoundException('No driver application on file');
+    }
+    return this.summarizeApplication(application, user);
+  }
+
+  async decideApplication(
+    driverId: string,
+    decision: 'approve' | 'reject',
+    note?: string,
+  ) {
+    const user = await this.requireDriver(driverId);
+    const current =
+      (await this.store.getDriverApplication(driverId)) ||
+      ({
+        userId: driverId,
+        profile: {},
+        identity: {},
+        licence: {},
+        vehicle: {},
+        inspection: {},
+        bank: {},
+        emergency: {},
+        status: 'draft',
+        submittedAt: null,
+        updatedAt: Date.now(),
+      } satisfies DriverApplication);
+
+    const next: DriverApplication = {
+      ...current,
+      status: decision === 'approve' ? 'approved' : 'rejected',
+      updatedAt: Date.now(),
+      submittedAt: current.submittedAt || Date.now(),
+      inspection: {
+        ...current.inspection,
+        ...(note ? { reviewNote: note } : {}),
+        ...(decision === 'approve' ? { status: 'approved' } : {}),
+      },
+    };
+    await this.store.upsertDriverApplication(next);
+    await this.store.upsertUser({
+      ...user,
+      status: decision === 'approve' ? 'active' : 'under_review',
+    });
+    return this.summarizeApplication(next, {
+      ...user,
+      status: decision === 'approve' ? 'active' : 'under_review',
+    });
   }
 }

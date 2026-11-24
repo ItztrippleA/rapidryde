@@ -226,6 +226,38 @@ export class DriversController {
     });
   }
 
+  /** Admin: full driver onboarding applications for desk review */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/drivers/applications')
+  applications(
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.drivers.listApplications({
+      status: status || undefined,
+      limit: limit != null ? Number(limit) : undefined,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/drivers/:id/application')
+  application(@Param('id') id: string) {
+    return this.drivers.getApplication(id);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/drivers/:id/decide')
+  decide(
+    @Param('id') id: string,
+    @Body() body: { decision?: 'approve' | 'reject'; note?: string },
+  ) {
+    const decision = body?.decision === 'reject' ? 'reject' : 'approve';
+    return this.drivers.decideApplication(id, decision, body?.note);
+  }
+
   /** Admin fleet map — live drivers with lat/lng + duty status */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')

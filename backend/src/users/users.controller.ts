@@ -1,7 +1,17 @@
-import { Body, Controller, Get, Put, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { IsBoolean, IsObject, IsOptional, IsString } from 'class-validator';
 import type { JwtPayload } from '../auth/auth.types';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { UsersService } from './users.service';
 
 class ProfileDto {
@@ -31,27 +41,37 @@ class DriverApplicationDto {
   @IsOptional() @IsBoolean() submit?: boolean;
 }
 
-@Controller('users')
-@UseGuards(JwtAuthGuard)
+@Controller()
 export class UsersController {
   constructor(private readonly users: UsersService) {}
 
-  @Get('me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/customers')
+  listCustomers(@Query('limit') limit?: string) {
+    return this.users.listCustomers(limit != null ? Number(limit) : undefined);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('users/me')
   me(@Req() req: { user: JwtPayload }) {
     return this.users.me(req.user.sub);
   }
 
-  @Put('me')
+  @UseGuards(JwtAuthGuard)
+  @Put('users/me')
   updateMe(@Req() req: { user: JwtPayload }, @Body() body: ProfileDto) {
     return this.users.updateProfile(req.user.sub, body);
   }
 
-  @Get('me/driver-application')
+  @UseGuards(JwtAuthGuard)
+  @Get('users/me/driver-application')
   getApplication(@Req() req: { user: JwtPayload }) {
     return this.users.getDriverApplication(req.user.sub);
   }
 
-  @Put('me/driver-application')
+  @UseGuards(JwtAuthGuard)
+  @Put('users/me/driver-application')
   saveApplication(
     @Req() req: { user: JwtPayload },
     @Body() body: DriverApplicationDto,

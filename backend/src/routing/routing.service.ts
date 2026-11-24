@@ -31,6 +31,9 @@ export type RouteEstimate = {
 @Injectable()
 export class RoutingService {
   private readonly log = new Logger(RoutingService.name);
+  /** After repeated 403s, skip Google for a while and use haversine (avoids log spam). */
+  private googleDisabledUntil = 0;
+  private lastGoogleWarnAt = 0;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -77,6 +80,7 @@ export class RoutingService {
     const fallback = this.estimateHaversine(from, to, waypoints);
     const key = this.key();
     if (!key) return fallback;
+    if (Date.now() < this.googleDisabledUntil) return fallback;
     if (
       ![from, to, ...waypoints].every(
         (point) =>
@@ -119,7 +123,16 @@ export class RoutingService {
 
       if (!response.ok) {
         const text = await response.text().catch(() => '');
-        this.log.warn(`Routes API ${response.status}: ${text.slice(0, 180)}`);
+        if (response.status === 403) {
+          this.googleDisabledUntil = Date.now() + 15 * 60_000;
+        }
+        const now = Date.now();
+        if (now - this.lastGoogleWarnAt > 60_000) {
+          this.lastGoogleWarnAt = now;
+          this.log.warn(
+            `Routes API ${response.status} — using estimate fallback. Enable Routes API on the Maps key if needed. ${text.slice(0, 120)}`,
+          );
+        }
         return fallback;
       }
 

@@ -1,0 +1,118 @@
+{
+  "expo": {
+    "name": "Rapyd Ryd",
+    "slug": "rapyd-ryd",
+    "scheme": "rapydryd",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rapydryd.customer",
+      "config": {
+        "googleMapsApiKey": ""
+      },
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Rapyd Ryd uses your location to set pickup and follow your trip.",
+        "NSCameraUsageDescription": "The camera is used for your profile photo.",
+        "NSPhotoLibraryUsageDescription": "Photos are used for your profile.",
+        "NSMicrophoneUsageDescription": "Rapyd Ryd uses the microphone so you can send voice notes to your driver.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.rapydryd.customer",
+      "config": {
+        "googleMaps": {
+          "apiKey": ""
+        }
+      },
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#070707",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#070707",
+          "image": "./assets/brand/logo-dark.png",
+          "imageWidth": 240,
+          "resizeMode": "contain"
+        }
+      ],
+      [
+        "onesignal-expo-plugin",
+        {
+          "mode": "development"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Rapyd Ryd uses your location to set pickup and follow your trip."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#E2B657"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Photos are used for your profile.",
+          "cameraPermission": "The camera is used for your profile photo."
+        }
+      ],
+      [
+        "react-native-maps",
+        {
+          "iosGoogleMapsApiKey": "",
+          "androidGoogleMapsApiKey": ""
+        }
+      ],
+      "expo-audio"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f2f812c0-a8fc-41df-a82d-7b52f43817f6"
+      },
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      }
+    }
+  }
+}

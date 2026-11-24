@@ -88,6 +88,8 @@ export class RideGateway
       maxDispatchRadiusKm: body?.maxDispatchRadiusKm,
       effectiveRadiusKm: body?.effectiveRadiusKm ?? body?.maxDispatchRadiusKm,
     });
+    // Do not dump every open search as a popup — offers only fire when a rider
+    // taps Confirm (POST /rides → dispatchOffers) or matching re-requests.
     return { ok: true };
   }
 
@@ -357,6 +359,44 @@ export class RideGateway
         this.bus.toDriver(row.driverId, 'ride:taken', { id: rideId });
       }
       return { ok: true, status: assigned.status };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed',
+      };
+    }
+  }
+
+  @SubscribeMessage('ride:decline')
+  async onRideDecline(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { id?: string },
+  ) {
+    const user = this.requireRole(client, 'driver');
+    const rideId = String(body?.id || '').trim();
+    if (!rideId) return { ok: false, error: 'Missing ride id' };
+    return this.rides.noteDriverDecline(user.sub, rideId);
+  }
+
+  /**
+   * Driver proposes / adjusts fare before accept — surface as a bid on the
+   * customer matching board (not on initial dispatch).
+   */
+  @SubscribeMessage('ride:fare')
+  async onRideFare(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { id?: string; fare?: number; quoted?: number },
+  ) {
+    const user = this.requireRole(client, 'driver');
+    const rideId = String(body?.id || '').trim();
+    const fare = Number(body?.fare);
+    if (!rideId || !Number.isFinite(fare) || fare <= 0) {
+      return { ok: false, error: 'Invalid fare' };
+    }
+    try {
+      return await this.rides.publishDriverBid(rideId, user.sub, fare, {
+        quoted: Number(body?.quoted),
+      });
     } catch (error) {
       return {
         ok: false,
