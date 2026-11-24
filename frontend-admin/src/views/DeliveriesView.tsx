@@ -38,7 +38,7 @@ export function DeliveriesView() {
 
   return (
     <Box>
-      <PageHeader kicker="Live" title="Deliveries" lede="Courier, freight, food, and grocery on the same desk as rides. Each order sits in a delivery zone." action={edit ? <Button variant="contained" onClick={() => { setCreating(true); setDraft({ id: uid("dl"), kind: "courier", city: "abuja", customerId: customers[0]?.id ?? "", driverId: null, zoneId: zones[0]?.id ?? "", pickup: "", dropoff: "", distanceKm: 4, fee: 1000, status: "new", note: "" }); }}>Add delivery</Button> : null} />
+      <PageHeader kicker="Live" title="Deliveries" lede="Courier, freight, food, and grocery. Ready for live orders when the delivery API is wired — desk starts empty." action={edit ? <Button variant="contained" onClick={() => { setCreating(true); setDraft({ id: uid("dl"), kind: "courier", city: "abuja", customerId: customers[0]?.id ?? "", driverId: null, zoneId: zones[0]?.id ?? "", pickup: "", dropoff: "", distanceKm: 4, fee: 1000, status: "new", note: "" }); }}>Add delivery</Button> : null} />
       <Box sx={{ overflow: "auto", border: "1px solid", borderColor: "divider", borderRadius: "8px", bgcolor: "background.paper" }}>
         <Table size="small">
           <TableHead>
@@ -53,6 +53,11 @@ export function DeliveriesView() {
             </TableRow>
           </TableHead>
           <TableBody>
+            {deliveries.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7}>No deliveries yet.</TableCell>
+              </TableRow>
+            ) : null}
             {deliveries.map((delivery) => (
               <TableRow key={delivery.id} hover>
                 <TableCell>

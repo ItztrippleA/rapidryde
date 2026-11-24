@@ -65,6 +65,11 @@ export function ZonesView() {
             <Table size="small">
               <TableHead><TableRow><TableCell>Zone</TableCell><TableCell>City</TableCell><TableCell>Surge</TableCell><TableCell>Minimum</TableCell><TableCell>State</TableCell><TableCell /></TableRow></TableHead>
               <TableBody>
+                {rideZones.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6}>No ride zones yet.</TableCell>
+                  </TableRow>
+                ) : null}
                 {rideZones.map((zone) => (
                   <TableRow key={zone.id} hover>
                     <TableCell sx={{ fontWeight: 700 }}>{zone.name}</TableCell>
@@ -84,6 +89,11 @@ export function ZonesView() {
             <Table size="small">
               <TableHead><TableRow><TableCell>Zone</TableCell><TableCell>City</TableCell><TableCell>Fee</TableCell><TableCell>Max distance</TableCell><TableCell>Services</TableCell><TableCell /></TableRow></TableHead>
               <TableBody>
+                {deliveryZones.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6}>No delivery zones yet.</TableCell>
+                  </TableRow>
+                ) : null}
                 {deliveryZones.map((zone) => (
                   <TableRow key={zone.id} hover>
                     <TableCell sx={{ fontWeight: 700 }}>{zone.name}</TableCell>

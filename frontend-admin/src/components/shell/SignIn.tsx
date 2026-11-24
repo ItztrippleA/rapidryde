@@ -53,7 +53,7 @@ export function SignIn() {
           {error ? <Typography color="error" sx={{ fontSize: 13 }}>{error}</Typography> : null}
           <Button type="submit" variant="contained" size="large">Sign in</Button>
         </Box>
-        <Typography sx={{ mt: 3, mb: 1, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>Sample accounts</Typography>
+        <Typography sx={{ mt: 3, mb: 1, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>Operator accounts</Typography>
         <Box sx={{ display: "grid", gap: 0.8 }}>
           {staff.filter((member) => member.status === "active").map((member) => (
             <Box

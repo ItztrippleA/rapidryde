@@ -56,6 +56,7 @@ export interface DriverProfile {
   colour: string;
   year: string;
   category: string;
+  fuelType: string;
   inspection: "not_scheduled" | "scheduled" | "in_progress" | "approved" | "rejected" | "resubmit";
   bankName: string;
   maskedAccount: string;

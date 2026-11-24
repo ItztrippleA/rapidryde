@@ -21,10 +21,9 @@ import { DriverPeek, type PeekDriver, type PeekRide } from "@/components/map/Dri
 import { FleetMap } from "@/components/map/FleetMap";
 import { PageHeader, Pill } from "@/components/ui/Chrome";
 import { adminLogin, api, hasApi } from "@/lib/api";
-import { fromGrid, inside, ring, toGrid } from "@/lib/geo";
+import { inside, ring, toGrid } from "@/lib/geo";
 import { cityLabel, naira, titleCase } from "@/lib/format";
 import type { CityId } from "@/lib/types";
-import { rides as catalogRides } from "@/data/seed";
 import { useAdminStore } from "@/store/useAdminStore";
 
 type LiveDriver = {
@@ -148,9 +147,6 @@ function mapApiRide(ride: ApiRide): PeekRide {
 }
 
 export function MapView() {
-  const seedDrivers = useAdminStore((state) => state.drivers);
-  const seedRides = useAdminStore((state) => state.rides);
-  const seedCustomers = useAdminStore((state) => state.customers);
   const rideZones = useAdminStore((state) => state.rideZones);
   const deliveryZones = useAdminStore((state) => state.deliveryZones);
   const [city, setCity] = useState<CityId>("abuja");
@@ -162,7 +158,7 @@ export function MapView() {
   const [peekOpen, setPeekOpen] = useState(false);
   const [live, setLive] = useState<LiveDriver[]>([]);
   const [looking, setLooking] = useState<LookingRide[]>([]);
-  const [source, setSource] = useState<"api" | "seed">("seed");
+  const [source, setSource] = useState<"api" | "offline">("offline");
   const [error, setError] = useState("");
   const [actionNote, setActionNote] = useState("");
   const [extending, setExtending] = useState<string | null>(null);
@@ -175,7 +171,8 @@ export function MapView() {
 
   const loadLive = useCallback(async () => {
     if (!hasApi()) {
-      setSource("seed");
+      setSource("offline");
+      setLive([]);
       setLooking([]);
       return;
     }
@@ -191,9 +188,10 @@ export function MapView() {
       ]);
       setLive(rows);
       setLooking(demand);
-      setSource(rows.length > 0 || demand.length > 0 ? "api" : "seed");
+      setSource("api");
     } catch (err) {
-      setSource("seed");
+      setSource("offline");
+      setLive([]);
       setLooking([]);
       setError(err instanceof Error ? err.message : "Live fleet unavailable");
     }
@@ -304,173 +302,41 @@ export function MapView() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const seedActiveRide = useCallback(
-    (driverId: string): PeekRide | null => {
-      const match = seedRides.find(
-        (item) =>
-          item.driverId === driverId &&
-          (item.status === "on_trip" || item.status === "assigned" || item.status === "searching"),
-      );
-      if (!match) return null;
-      const catalog = catalogRides.find((item) => item.id === match.id);
-      const along = Boolean(match.along || catalog?.along || match.classId === "along");
-      const riders =
-        match.riders && match.riders.length > 1
-          ? match.riders
-          : catalog?.riders && catalog.riders.length > 0
-            ? catalog.riders
-            : match.riders;
-      const customer = seedCustomers.find((item) => item.id === match.customerId);
-      return {
-        id: match.id,
-        status: match.status,
-        classId: along ? "along" : match.classId,
-        classLabel: along ? "Along" : undefined,
-        pickup: match.pickup,
-        dropoff: match.dropoff,
-        fare: match.fare,
-        plannedKm: match.distanceKm,
-        customerName: customer?.name,
-        customerPhone: customer?.phone,
-        when: match.when,
-        along,
-        poolId: match.poolId || catalog?.poolId,
-        seatsTotal: match.seatsTotal || catalog?.seatsTotal || 3,
-        riders,
-      };
-    },
-    [seedCustomers, seedRides],
-  );
-
   const markers = useMemo(() => {
-    if (source === "api") {
-      return live
-        .filter((driver) => !onlineOnly || driver.online)
-        .filter((driver) => !driver.city || driver.city === city)
-        .map((driver) => {
-          const point =
-            driver.latitude != null && driver.longitude != null
-              ? toGrid(city, driver.latitude, driver.longitude)
-              : { x: 50, y: 50 };
-          return {
-            id: driver.driverId,
-            name: driver.name,
-            x: point.x,
-            y: point.y,
-            lat: driver.latitude,
-            lng: driver.longitude,
-            online: driver.online,
-            status: driver.status,
-            heading: driver.heading ?? seedHeading(driver.driverId),
-            along: Boolean(driver.poolId),
-            poolTaken: driver.poolId ? 1 : 0,
-            poolTotal: 3,
-          };
-        });
-    }
-    return seedDrivers
-      .filter((driver) => driver.city === city)
-      .filter((driver) => (onlineOnly ? driver.online : true))
+    return live
+      .filter((driver) => !onlineOnly || driver.online)
+      .filter((driver) => !driver.city || driver.city === city)
       .map((driver) => {
-        const active = seedActiveRide(driver.id);
-        const status = !driver.online
-          ? ("offline" as const)
-          : active?.status === "on_trip"
-            ? ("on_trip" as const)
-            : active
-              ? ("busy" as const)
-              : ("available" as const);
-        const geo = fromGrid(city, driver.x, driver.y);
-        const poolRide =
-          seedRides.find(
-            (ride) =>
-              ride.driverId === driver.id &&
-              (ride.along || ride.classId === "along") &&
-              (ride.status === "on_trip" || ride.status === "assigned"),
-          ) ||
-          catalogRides.find(
-            (ride) =>
-              ride.driverId === driver.id &&
-              ride.along &&
-              (ride.status === "on_trip" || ride.status === "assigned"),
-          );
-        const riders = poolRide?.riders?.length
-          ? poolRide.riders
-          : catalogRides.find((ride) => ride.id === poolRide?.id)?.riders;
+        const point =
+          driver.latitude != null && driver.longitude != null
+            ? toGrid(city, driver.latitude, driver.longitude)
+            : { x: 50, y: 50 };
         return {
-          id: driver.id,
+          id: driver.driverId,
           name: driver.name,
-          x: driver.x,
-          y: driver.y,
-          lat: geo.lat,
-          lng: geo.lng,
+          x: point.x,
+          y: point.y,
+          lat: driver.latitude,
+          lng: driver.longitude,
           online: driver.online,
-          status,
-          heading: seedHeading(driver.id),
-          along: Boolean(poolRide?.along || poolRide?.classId === "along"),
-          poolTaken: riders?.length ?? 0,
-          poolTotal: poolRide?.seatsTotal ?? 3,
+          status: driver.status,
+          heading: driver.heading ?? seedHeading(driver.driverId),
+          along: Boolean(driver.poolId),
+          poolTaken: driver.poolId ? 1 : 0,
+          poolTotal: 3,
         };
       });
-  }, [source, live, seedDrivers, seedRides, city, onlineOnly, seedActiveRide]);
+  }, [live, city, onlineOnly]);
 
   const searcherOverlays = useMemo(() => {
-    const rows =
-      source === "api"
-        ? looking
-        : seedRides
-            .filter((ride) => ride.status === "searching")
-            .map((ride) => {
-              const customer = seedCustomers.find((item) => item.id === ride.customerId);
-              const driver = seedDrivers.find((item) => item.city === city && item.online);
-              return {
-                rideId: ride.id,
-                city,
-                customer: { name: customer?.name, phone: customer?.phone },
-                pickup: { label: ride.pickup, latitude: 0, longitude: 0 },
-                position: undefined as LookingRide["position"],
-                dropoff: { label: ride.dropoff },
-                fare: ride.fare,
-                createdAt: Date.now(),
-                waitingMs: 0,
-                closest: driver
-                  ? {
-                      driverId: driver.id,
-                      name: driver.name,
-                      phone: driver.phone,
-                      km: 2.4,
-                      latitude: fromGrid(city, driver.x, driver.y).lat,
-                      longitude: fromGrid(city, driver.x, driver.y).lng,
-                      maxDispatchRadiusKm: 10,
-                      effectiveRadiusKm: 10,
-                      canSee: true,
-                      shortfallKm: 0,
-                    }
-                  : null,
-                nearby: [] as LookingDriver[],
-              } satisfies LookingRide;
-            });
+    const rows = looking;
 
     const searchers = rows
       .map((row) => {
         const lat = row.position?.latitude ?? row.pickup.latitude;
         const lng = row.position?.longitude ?? row.pickup.longitude;
-        if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) {
-          // Seed rows without coords — place near map center with a stable offset.
-          const offset = (row.rideId.charCodeAt(row.rideId.length - 1) % 7) - 3;
-          const x = 48 + offset * 3;
-          const y = 42 + offset * 2;
-          const geo = fromGrid(city, x, y);
-          return {
-            id: row.rideId,
-            name: row.customer?.name || "Customer",
-            x,
-            y,
-            lat: geo.lat,
-            lng: geo.lng,
-            live: false,
-            label: "Searching",
-          };
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          return null;
         }
         const point = toGrid(city, lat, lng);
         return {
@@ -483,7 +349,8 @@ export function MapView() {
           live: row.position?.source === "live",
           label: row.position?.source === "live" ? "Live" : "Pickup",
         };
-      });
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
     const driverPoints = new Map(markers.map((m) => [m.id, m]));
     const links = rows
@@ -528,48 +395,28 @@ export function MapView() {
       .filter((link): link is NonNullable<typeof link> => Boolean(link));
 
     return { searchers, links, rows };
-  }, [source, looking, seedRides, seedCustomers, seedDrivers, city, markers]);
+  }, [looking, city, markers]);
 
   const peekDriver: PeekDriver | null = useMemo(() => {
     if (!selected) return null;
     const liveMatch = live.find((d) => d.driverId === selected);
-    if (liveMatch) {
-      return {
-        id: liveMatch.driverId,
-        name: liveMatch.name,
-        phone: liveMatch.phone,
-        status: liveMatch.status,
-        online: liveMatch.online,
-        city: liveMatch.city,
-        latitude: liveMatch.latitude,
-        longitude: liveMatch.longitude,
-        heading: liveMatch.heading ?? seedHeading(liveMatch.driverId),
-        activeRideId: liveMatch.activeRideId,
-        poolId: liveMatch.poolId,
-        lastSeenAt: liveMatch.lastSeenAt,
-        accountStatus: liveMatch.accountStatus,
-      };
-    }
-    const seed = seedDrivers.find((d) => d.id === selected);
-    if (!seed) return null;
-    const active = seedActiveRide(seed.id);
+    if (!liveMatch) return null;
     return {
-      id: seed.id,
-      name: seed.name,
-      phone: seed.phone,
-      status: !seed.online ? "offline" : active?.status === "on_trip" ? "on_trip" : active ? "busy" : "available",
-      online: seed.online,
-      city: seed.city,
-      vehicle: seed.vehicle,
-      plate: seed.plate,
-      heading: seedHeading(seed.id),
-      activeRideId: active?.id ?? null,
-      poolId: active?.poolId ?? null,
-      rating: seed.rating,
-      trips: seed.trips,
-      accountStatus: seed.status,
+      id: liveMatch.driverId,
+      name: liveMatch.name,
+      phone: liveMatch.phone,
+      status: liveMatch.status,
+      online: liveMatch.online,
+      city: liveMatch.city,
+      latitude: liveMatch.latitude,
+      longitude: liveMatch.longitude,
+      heading: liveMatch.heading ?? seedHeading(liveMatch.driverId),
+      activeRideId: liveMatch.activeRideId,
+      poolId: liveMatch.poolId,
+      lastSeenAt: liveMatch.lastSeenAt,
+      accountStatus: liveMatch.accountStatus,
     };
-  }, [selected, live, seedDrivers, seedActiveRide]);
+  }, [selected, live]);
 
   useEffect(() => {
     if (!peekOpen || !peekDriver) {
@@ -578,18 +425,9 @@ export function MapView() {
       return;
     }
 
-    const seedRide = seedActiveRide(peekDriver.id);
-    const rideId = peekDriver.activeRideId || seedRide?.id || null;
-
-    if (!rideId) {
+    const rideId = peekDriver.activeRideId || null;
+    if (!rideId || !hasApi()) {
       setRide(null);
-      setRideLoading(false);
-      return;
-    }
-
-    // Prefer seed Along / pool detail (multi-rider + seats) over incomplete live payloads.
-    if (!hasApi() || source === "seed" || (seedRide?.along && (seedRide.riders?.length ?? 0) > 1)) {
-      setRide(seedRide);
       setRideLoading(false);
       return;
     }
@@ -600,16 +438,9 @@ export function MapView() {
       try {
         const { token } = await adminLogin();
         const remote = await api<ApiRide>(`/rides/${rideId}`, { token });
-        if (!cancelled) {
-          const mapped = mapApiRide(remote);
-          if (seedRide?.along && (seedRide.riders?.length ?? 0) > (mapped.riders?.length ?? 0)) {
-            setRide(seedRide);
-          } else {
-            setRide(mapped);
-          }
-        }
+        if (!cancelled) setRide(mapApiRide(remote));
       } catch {
-        if (!cancelled) setRide(seedRide);
+        if (!cancelled) setRide(null);
       } finally {
         if (!cancelled) setRideLoading(false);
       }
@@ -618,7 +449,7 @@ export function MapView() {
     return () => {
       cancelled = true;
     };
-  }, [peekOpen, peekDriver, seedActiveRide, source]);
+  }, [peekOpen, peekDriver]);
 
   function selectDriver(id: string) {
     setSelected(id);
@@ -650,7 +481,7 @@ export function MapView() {
       />
       {error ? (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          {error}. Showing local seed positions until the API is up.
+          {error}
         </Alert>
       ) : null}
       {actionNote ? (
@@ -660,13 +491,14 @@ export function MapView() {
       ) : null}
       {source === "api" ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          Live from NestJS · {markers.length} driver{markers.length === 1 ? "" : "s"} · {searcherOverlays.searchers.length} looking for a ride
+          Live · {markers.length} driver{markers.length === 1 ? "" : "s"} · {searcherOverlays.searchers.length} looking
+          for a ride
         </Alert>
-      ) : hasApi() && live.length === 0 ? (
+      ) : (
         <Alert severity="info" sx={{ mb: 2 }}>
-          No live pings yet — showing seed cars with demo headings until drivers go online.
+          Connect the API and wait for drivers to go online. The map stays empty until then.
         </Alert>
-      ) : null}
+      )}
       <Box sx={{ display: "flex", gap: 1, mb: 2, flexWrap: "wrap" }}>
         {(["abuja", "lagos"] as const).map((id) => (
           <Button key={id} variant={city === id ? "contained" : "outlined"} onClick={() => setCity(id)}>

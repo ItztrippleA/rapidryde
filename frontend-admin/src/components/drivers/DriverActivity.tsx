@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pill } from "@/components/ui/Chrome";
 import { adminLogin, api, hasApi } from "@/lib/api";
 import { ago, cityLabel, titleCase } from "@/lib/format";
-import type { CityId, Driver } from "@/lib/types";
+import type { CityId } from "@/lib/types";
 
 type Duty = "offline" | "available" | "on_trip" | "busy";
 
@@ -52,25 +52,9 @@ function freshnessTone(at: number | null | undefined, online: boolean, now: numb
   return "hot" as const;
 }
 
-function fromSeed(drivers: Driver[], now: number): LiveRow[] {
-  return drivers.map((driver) => ({
-    driverId: driver.id,
-    name: driver.name,
-    phone: driver.phone,
-    status: driver.online ? "available" : "offline",
-    city: driver.city,
-    latitude: null,
-    longitude: null,
-    online: driver.online,
-    activeRideId: null,
-    lastSeenAt: driver.online ? now - 45_000 : null,
-    accountStatus: driver.status,
-  }));
-}
-
-export function DriverActivity({ drivers }: { drivers: Driver[] }) {
+export function DriverActivity() {
   const [rows, setRows] = useState<LiveRow[]>([]);
-  const [source, setSource] = useState<"api" | "seed">("seed");
+  const [source, setSource] = useState<"api" | "offline">("offline");
   const [error, setError] = useState("");
   const [city, setCity] = useState<CityId | "all">("all");
   const [filter, setFilter] = useState<Filter>("all");
@@ -81,8 +65,8 @@ export function DriverActivity({ drivers }: { drivers: Driver[] }) {
     const stamp = Date.now();
     setNow(stamp);
     if (!hasApi()) {
-      setRows(fromSeed(drivers, stamp));
-      setSource("seed");
+      setRows([]);
+      setSource("offline");
       return;
     }
     try {
@@ -90,19 +74,14 @@ export function DriverActivity({ drivers }: { drivers: Driver[] }) {
       const { token } = await adminLogin();
       const query = city === "all" ? "onlineOnly=false" : `city=${city}&onlineOnly=false`;
       const live = await api<LiveRow[]>(`/admin/drivers/live?${query}`, { token });
-      if (live.length) {
-        setRows(live);
-        setSource("api");
-        return;
-      }
-      setRows(fromSeed(drivers, stamp).filter((row) => city === "all" || row.city === city));
-      setSource("seed");
+      setRows(live);
+      setSource("api");
     } catch (err) {
-      setRows(fromSeed(drivers, stamp).filter((row) => city === "all" || row.city === city));
-      setSource("seed");
+      setRows([]);
+      setSource("offline");
       setError(err instanceof Error ? err.message : "Presence unavailable");
     }
-  }, [city, drivers]);
+  }, [city]);
 
   useEffect(() => {
     void load();
@@ -142,7 +121,7 @@ export function DriverActivity({ drivers }: { drivers: Driver[] }) {
         <Box sx={{ flex: 1, minWidth: 180 }}>
           <Typography sx={{ fontWeight: 800 }}>Driver activity</Typography>
           <Typography sx={{ color: "text.secondary", fontSize: 13 }}>
-            Last seen from presence pings{source === "seed" ? " · sample roster" : " · live"}.
+            Last seen from presence pings{source === "api" ? " · live" : " · waiting for API"}.
           </Typography>
         </Box>
         <Pill tone="ok">{onlineCount} online</Pill>

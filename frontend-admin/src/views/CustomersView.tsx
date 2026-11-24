@@ -1,135 +1,423 @@
 "use client";
 
-import DeleteOutlinedIcon from "@mui/icons-material/DeleteOutlined";
-import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import ChatOutlinedIcon from "@mui/icons-material/ChatOutlined";
+import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import IconButton from "@mui/material/IconButton";
-import MenuItem from "@mui/material/MenuItem";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
-import { useMemo, useState } from "react";
-import { Confirm, Editor, PageHeader, Pill } from "@/components/ui/Chrome";
-import { useEdit } from "@/components/access/Gate";
-import { cityLabel, naira, titleCase, uid } from "@/lib/format";
-import type { Customer } from "@/lib/types";
-import { useAdminStore } from "@/store/useAdminStore";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSession } from "@/components/access/Gate";
+import { PageHeader, Pill } from "@/components/ui/Chrome";
+import { adminLogin, api, hasApi } from "@/lib/api";
+import { cityLabel, naira, titleCase } from "@/lib/format";
+import { labelOf, RideDetailDialog, type SessionRow, whenOf } from "@/views/RidesView";
 
-function blank(): Customer {
-  return { id: uid("c"), name: "", phone: "+234 ", email: "", city: "lagos", ninStatus: "pending", status: "pending", rating: 5, trips: 0, wallet: 0, rideSpend: 0, joined: "Today" };
+type CustomerRow = {
+  id: string;
+  code: string | null;
+  name: string;
+  phone: string;
+  email: string;
+  city: string;
+  ninStatus: string;
+  identityStatus?: string;
+  maskedNin?: string | null;
+  status: string;
+  rating: number;
+  trips: number;
+  wallet: number;
+  rideSpend: number;
+  joined: string;
+};
+
+function accountTone(status: string): "ok" | "warn" | "hot" | "off" {
+  if (status === "active") return "ok";
+  if (status === "pending") return "warn";
+  if (status === "suspended") return "hot";
+  return "off";
+}
+
+function placeLabel(city: string) {
+  if (city === "abuja" || city === "lagos") return cityLabel(city);
+  return titleCase(city || "—");
+}
+
+function DetailLine({ label, value }: { label: string; value?: string | number | null }) {
+  const text = value == null || value === "" ? "—" : String(value);
+  return (
+    <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2, py: 0.6, borderBottom: "1px solid", borderColor: "divider" }}>
+      <Typography sx={{ fontSize: 13, color: "text.secondary" }}>{label}</Typography>
+      <Typography sx={{ fontSize: 13, fontWeight: 600, textAlign: "right" }}>{text}</Typography>
+    </Box>
+  );
 }
 
 export function CustomersView() {
-  const edit = useEdit();
-  const customers = useAdminStore((state) => state.customers);
-  const saveCustomer = useAdminStore((state) => state.saveCustomer);
-  const removeCustomer = useAdminStore((state) => state.removeCustomer);
+  const router = useRouter();
+  const { canView } = useSession();
+  const canChat = canView("support");
+  const [rows, setRows] = useState<CustomerRow[]>([]);
+  const [loading, setLoading] = useState(hasApi());
+  const [error, setError] = useState("");
   const [query, setQuery] = useState("");
-  const [draft, setDraft] = useState<Customer | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [removeId, setRemoveId] = useState<string | null>(null);
-  const rows = useMemo(() => {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [customerRides, setCustomerRides] = useState<SessionRow[]>([]);
+  const [ridesLoading, setRidesLoading] = useState(false);
+  const [rideDetail, setRideDetail] = useState<SessionRow | null>(null);
+  const [openingChatId, setOpeningChatId] = useState<string | null>(null);
+
+  const openChat = useCallback(
+    async (customer: CustomerRow) => {
+      if (!canChat || !hasApi()) return;
+      setOpeningChatId(customer.id);
+      setError("");
+      try {
+        const { token } = await adminLogin();
+        const thread = await api<{ id: string }>("/admin/support/open", {
+          method: "POST",
+          token,
+          body: JSON.stringify({
+            party: "customer",
+            partyId: customer.id,
+            subject: `Chat with ${customer.name}`,
+          }),
+        });
+        router.push(`/support?thread=${encodeURIComponent(thread.id)}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not open chat.");
+      } finally {
+        setOpeningChatId(null);
+      }
+    },
+    [canChat, router],
+  );
+
+  const load = useCallback(async () => {
+    if (!hasApi()) {
+      setError("API URL is not configured.");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const { token } = await adminLogin();
+      const remote = await api<CustomerRow[]>("/admin/customers?limit=300", { token });
+      setRows(remote);
+      setSelectedId((current) => {
+        if (current && remote.some((row) => row.id === current)) return current;
+        return remote[0]?.id ?? null;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load customers.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const selected = rows.find((row) => row.id === selectedId) ?? null;
+
+  useEffect(() => {
+    if (!selected) {
+      setCustomerRides([]);
+      setRideDetail(null);
+      return;
+    }
+    let cancelled = false;
+    setRidesLoading(true);
+    setCustomerRides([]);
+    setRideDetail(null);
+    void (async () => {
+      if (!hasApi()) {
+        if (!cancelled) setRidesLoading(false);
+        return;
+      }
+      try {
+        const { token } = await adminLogin();
+        const rides = await api<SessionRow[]>(
+          `/rides?customerId=${encodeURIComponent(selected.id)}&limit=50`,
+          { token },
+        );
+        if (!cancelled) setCustomerRides(rides);
+      } catch {
+        if (!cancelled) setCustomerRides([]);
+      } finally {
+        if (!cancelled) setRidesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id]);
+
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return customers.filter((customer) => !q || `${customer.name} ${customer.phone} ${customer.email} ${customer.city}`.toLowerCase().includes(q));
-  }, [customers, query]);
-  const walletTotal = customers.reduce((sum, customer) => sum + (customer.wallet || 0), 0);
-  const spendTotal = customers.reduce((sum, customer) => sum + (customer.rideSpend || 0), 0);
-  const patch = (partial: Partial<Customer>) => setDraft((current) => (current ? { ...current, ...partial } : current));
+    if (!q) return rows;
+    return rows.filter((customer) =>
+      `${customer.name} ${customer.phone} ${customer.email} ${customer.code || ""} ${customer.city}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [rows, query]);
+
+  const walletTotal = rows.reduce((sum, customer) => sum + (customer.wallet || 0), 0);
+  const spendTotal = rows.reduce((sum, customer) => sum + (customer.rideSpend || 0), 0);
 
   return (
     <Box>
-      <PageHeader kicker="People" title="Customers" lede="Wallet is the balance on the account. Ride spend is completed fares so far, including trips that have left the rides desk. A new completion adds to that total." action={edit ? <Button variant="contained" onClick={() => { setCreating(true); setDraft(blank()); }}>Add customer</Button> : null} />
+      <PageHeader
+        kicker="People"
+        title="Customers"
+        lede="Accounts from the API. Click a customer to see details and ride history."
+        action={
+          <Button startIcon={<RefreshOutlinedIcon />} onClick={() => void load()} disabled={loading}>
+            Refresh
+          </Button>
+        }
+      />
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5, mb: 2 }}>
         <Box sx={{ p: 2, borderRadius: "8px", border: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
-          <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>Wallets held</Typography>
-          <Typography variant="h2" sx={{ mt: 0.6 }}>{naira(walletTotal)}</Typography>
-          <Typography color="text.secondary" sx={{ fontSize: 13 }}>Across {customers.length} customers</Typography>
+          <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>
+            Accounts
+          </Typography>
+          <Typography variant="h2" sx={{ mt: 0.6 }}>
+            {rows.length}
+          </Typography>
+          <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+            {rows.filter((row) => row.status === "active").length} active
+          </Typography>
         </Box>
         <Box sx={{ p: 2, borderRadius: "8px", border: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
-          <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>Total ride spend</Typography>
-          <Typography variant="h2" sx={{ mt: 0.6 }}>{naira(spendTotal)}</Typography>
-          <Typography color="text.secondary" sx={{ fontSize: 13 }}>Completed ride fares</Typography>
+          <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>
+            Wallets / spend
+          </Typography>
+          <Typography variant="h2" sx={{ mt: 0.6 }}>
+            {naira(walletTotal)}
+          </Typography>
+          <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+            Ride spend tracked {naira(spendTotal)}
+          </Typography>
         </Box>
       </Box>
-      <TextField size="small" label="Search customers" value={query} onChange={(event) => setQuery(event.target.value)} sx={{ mb: 2, width: { xs: "100%", sm: 320 } }} />
-      <Box sx={{ overflow: "auto", border: "1px solid", borderColor: "divider", borderRadius: "8px", bgcolor: "background.paper" }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Customer</TableCell>
-              <TableCell>City</TableCell>
-              <TableCell>NIN</TableCell>
-              <TableCell>Account</TableCell>
-              <TableCell>Trips</TableCell>
-              <TableCell>Wallet</TableCell>
-              <TableCell>Ride spend</TableCell>
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.map((customer) => (
-              <TableRow key={customer.id} hover>
-                <TableCell>
-                  <Box sx={{ fontWeight: 700 }}>{customer.name}</Box>
-                  <Box sx={{ color: "text.secondary", fontSize: 13 }}>{customer.phone}</Box>
-                </TableCell>
-                <TableCell>{cityLabel(customer.city)}</TableCell>
-                <TableCell><Pill tone={customer.ninStatus === "verified" ? "ok" : customer.ninStatus === "failed" ? "hot" : "warn"}>{customer.ninStatus}</Pill></TableCell>
-                <TableCell><Pill tone={customer.status === "active" ? "ok" : customer.status === "suspended" ? "hot" : "warn"}>{titleCase(customer.status)}</Pill></TableCell>
-                <TableCell>{customer.trips}</TableCell>
-                <TableCell>{naira(customer.wallet || 0)}</TableCell>
-                <TableCell>{naira(customer.rideSpend || 0)}</TableCell>
-                <TableCell align="right" sx={{ display: edit ? "table-cell" : "none" }}>
-                  <IconButton aria-label={`Edit ${customer.name}`} onClick={() => { setCreating(false); setDraft({ ...customer }); }}><EditOutlinedIcon /></IconButton>
-                  <IconButton aria-label={`Delete ${customer.name}`} onClick={() => setRemoveId(customer.id)}><DeleteOutlinedIcon /></IconButton>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+      {error ? (
+        <Typography color="error" sx={{ mb: 1.5, fontSize: 13 }}>
+          {error}
+        </Typography>
+      ) : null}
+      <TextField
+        size="small"
+        label="Search customers"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        sx={{ mb: 2, width: { xs: "100%", sm: 320 } }}
+      />
+
+      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "340px minmax(0, 1fr)" }, gap: 1.5, minHeight: 520 }}>
+        <Box
+          sx={{
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: "8px",
+            bgcolor: "background.paper",
+            overflow: "auto",
+            maxHeight: { md: 640 },
+            display: selected ? { xs: "none", md: "block" } : "block",
+          }}
+        >
+          {loading && filtered.length === 0 ? (
+            <Typography color="text.secondary" sx={{ p: 2 }}>
+              Loading customers…
+            </Typography>
+          ) : null}
+          {!loading && filtered.length === 0 ? (
+            <Typography color="text.secondary" sx={{ p: 2 }}>
+              No customers yet.
+            </Typography>
+          ) : null}
+          {filtered.map((customer) => {
+            const active = customer.id === selected?.id;
+            const chatting = openingChatId === customer.id;
+            return (
+              <Box
+                key={customer.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedId(customer.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedId(customer.id);
+                  }
+                }}
+                sx={{
+                  px: 1.5,
+                  py: 1.3,
+                  cursor: "pointer",
+                  borderBottom: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: active ? "action.selected" : "transparent",
+                  "&:hover": { bgcolor: active ? "action.selected" : "action.hover" },
+                }}
+              >
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                      <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{customer.name}</Typography>
+                      <Pill tone={accountTone(customer.status)}>{titleCase(customer.status)}</Pill>
+                    </Box>
+                    <Typography color="text.secondary" sx={{ fontSize: 13, mt: 0.35 }}>
+                      {customer.code || customer.id} · {customer.phone}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ fontSize: 12, mt: 0.25 }}>
+                      {placeLabel(customer.city)} · {naira(customer.rideSpend || 0)} spent
+                    </Typography>
+                  </Box>
+                  {canChat ? (
+                    <Tooltip title="Chat with customer">
+                      <IconButton
+                        size="small"
+                        aria-label={`Chat with ${customer.name}`}
+                        disabled={chatting}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void openChat(customer);
+                        }}
+                      >
+                        {chatting ? <CircularProgress size={16} /> : <ChatOutlinedIcon fontSize="small" />}
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                </Box>
+              </Box>
+            );
+          })}
+        </Box>
+
+        <Box
+          sx={{
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: "8px",
+            bgcolor: "background.paper",
+            display: selected ? "flex" : { xs: "none", md: "flex" },
+            flexDirection: "column",
+            minHeight: 520,
+            maxHeight: { md: 640 },
+            overflow: "hidden",
+          }}
+        >
+          {selected ? (
+            <>
+              <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid", borderColor: "divider", display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
+                <Button size="small" sx={{ display: { md: "none" } }} onClick={() => setSelectedId(null)}>
+                  Back
+                </Button>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography sx={{ fontWeight: 700 }}>{selected.name}</Typography>
+                  <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+                    {selected.phone}
+                    {selected.email ? ` · ${selected.email}` : ""}
+                  </Typography>
+                </Box>
+                <Pill tone={accountTone(selected.status)}>{titleCase(selected.status)}</Pill>
+                <Pill tone={selected.ninStatus === "verified" ? "ok" : selected.ninStatus === "failed" ? "hot" : "warn"}>
+                  NIN {selected.identityStatus || selected.ninStatus}
+                </Pill>
+                {canChat ? (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={
+                      openingChatId === selected.id ? <CircularProgress size={14} /> : <ChatOutlinedIcon fontSize="small" />
+                    }
+                    disabled={openingChatId === selected.id}
+                    onClick={() => void openChat(selected)}
+                  >
+                    Chat
+                  </Button>
+                ) : null}
+              </Box>
+
+              <Box sx={{ flex: 1, overflow: "auto", p: 2, display: "grid", alignContent: "start", gap: 1.2 }}>
+                <DetailLine label="Code" value={selected.code} />
+                <DetailLine label="City" value={placeLabel(selected.city)} />
+                <DetailLine label="Joined" value={selected.joined} />
+                <DetailLine label="Rating" value={selected.rating} />
+                <DetailLine label="Trips" value={selected.trips} />
+                <DetailLine label="Wallet" value={naira(selected.wallet || 0)} />
+                <DetailLine label="Ride spend" value={naira(selected.rideSpend || 0)} />
+                <DetailLine label="Masked NIN" value={selected.maskedNin} />
+
+                <Typography sx={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.4, color: "text.secondary", mt: 1.5 }}>
+                  RIDE HISTORY
+                </Typography>
+                {ridesLoading ? (
+                  <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+                    Loading rides…
+                  </Typography>
+                ) : customerRides.length === 0 ? (
+                  <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+                    No rides for this customer yet.
+                  </Typography>
+                ) : (
+                  <Box sx={{ display: "grid", gap: 0.8 }}>
+                    {customerRides.map((ride) => (
+                      <Box
+                        key={ride.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setRideDetail(ride)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setRideDetail(ride);
+                          }
+                        }}
+                        sx={{
+                          p: 1.2,
+                          borderRadius: "8px",
+                          border: "1px solid",
+                          borderColor: "divider",
+                          cursor: "pointer",
+                          "&:hover": { bgcolor: "action.hover" },
+                        }}
+                      >
+                        <Box sx={{ display: "flex", justifyContent: "space-between", gap: 1, alignItems: "center" }}>
+                          <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
+                            {labelOf(ride.pickup)} → {labelOf(ride.dropoff)}
+                          </Typography>
+                          <Pill tone={ride.status === "cancelled" ? "hot" : ride.status === "completed" ? "off" : "ok"}>
+                            {titleCase(ride.status)}
+                          </Pill>
+                        </Box>
+                        <Typography color="text.secondary" sx={{ fontSize: 12, mt: 0.4 }}>
+                          {whenOf(ride)} · {naira(ride.fare)}
+                          {ride.driver?.name ? ` · ${ride.driver.name}` : " · Unassigned"}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+              </Box>
+            </>
+          ) : (
+            <Typography color="text.secondary" sx={{ m: "auto", p: 3 }}>
+              Choose a customer from the list.
+            </Typography>
+          )}
+        </Box>
       </Box>
-      <Editor
-        open={Boolean(draft)}
-        title={creating ? "New customer" : "Edit customer"}
-        onClose={() => setDraft(null)}
-        onSave={() => {
-          if (!draft || !draft.name.trim() || draft.phone.trim().length < 6) return;
-          saveCustomer({ ...draft, name: draft.name.trim(), wallet: Number(draft.wallet) || 0, trips: Number(draft.trips) || 0 }, creating);
-          setDraft(null);
-        }}
-      >
-        {draft ? (
-          <>
-            <TextField label="Name" value={draft.name} onChange={(event) => patch({ name: event.target.value })} />
-            <TextField label="Phone" value={draft.phone} onChange={(event) => patch({ phone: event.target.value })} />
-            <TextField label="Email" value={draft.email} onChange={(event) => patch({ email: event.target.value })} />
-            <TextField select label="City" value={draft.city} onChange={(event) => patch({ city: event.target.value as Customer["city"] })}>
-              <MenuItem value="abuja">Abuja</MenuItem>
-              <MenuItem value="lagos">Lagos</MenuItem>
-            </TextField>
-            <TextField select label="NIN check" value={draft.ninStatus} onChange={(event) => patch({ ninStatus: event.target.value as Customer["ninStatus"] })}>
-              <MenuItem value="pending">Pending</MenuItem>
-              <MenuItem value="verified">Verified</MenuItem>
-              <MenuItem value="failed">Failed</MenuItem>
-            </TextField>
-            <TextField select label="Account" value={draft.status} onChange={(event) => patch({ status: event.target.value as Customer["status"] })}>
-              <MenuItem value="active">Active</MenuItem>
-              <MenuItem value="pending">Pending</MenuItem>
-              <MenuItem value="suspended">Suspended</MenuItem>
-              <MenuItem value="closed">Closed</MenuItem>
-            </TextField>
-            <TextField label="Wallet (₦)" type="number" value={draft.wallet} onChange={(event) => patch({ wallet: Number(event.target.value) })} />
-            <TextField label="Ride spend (₦)" type="number" value={draft.rideSpend} disabled helperText="Completed ride fares. Marking a ride completed updates this." />
-            <TextField label="Trips" type="number" value={draft.trips} onChange={(event) => patch({ trips: Number(event.target.value) })} />
-          </>
-        ) : null}
-      </Editor>
-      <Confirm open={Boolean(removeId)} title="Remove this customer?" body="The account and any subscription on it leave the console. Trip history on other screens keeps the old id." onClose={() => setRemoveId(null)} onConfirm={() => { if (removeId) removeCustomer(removeId); setRemoveId(null); }} />
+
+      <RideDetailDialog ride={rideDetail} onClose={() => setRideDetail(null)} />
     </Box>
   );
 }

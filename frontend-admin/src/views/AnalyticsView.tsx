@@ -50,7 +50,7 @@ export function AnalyticsView() {
 
   return (
     <Box>
-      <PageHeader kicker="Overview" title="Analytics" lede="Figures drawn from the desks: fleet, customers, rides, deliveries, zones, subscriptions, promos, support, and notifications. A chart appears only when this role can open that desk." />
+      <PageHeader kicker="Overview" title="Analytics" lede="Charts follow live desks and commercial config. Empty charts mean no records yet — they fill as drivers, customers, and rides appear." />
 
       <Block title="Fleet" show={canView("drivers")}>
         <ChartCard title="On the road" note="Online against the roster.">

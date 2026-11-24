@@ -42,6 +42,11 @@ export function PromosView() {
         <Table size="small">
           <TableHead><TableRow><TableCell>Code</TableCell><TableCell>Offer</TableCell><TableCell>Who</TableCell><TableCell>Uses</TableCell><TableCell>State</TableCell><TableCell /></TableRow></TableHead>
           <TableBody>
+            {promos.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6}>No promos yet. Add one when you are ready to run a code.</TableCell>
+              </TableRow>
+            ) : null}
             {promos.map((promo) => (
               <TableRow key={promo.id} hover>
                 <TableCell><Box sx={{ fontWeight: 700 }}>{promo.code}</Box><Box sx={{ color: "text.secondary", fontSize: 12 }}>{promo.name}</Box></TableCell>

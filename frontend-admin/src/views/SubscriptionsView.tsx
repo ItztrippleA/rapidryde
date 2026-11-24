@@ -72,6 +72,11 @@ export function SubscriptionsView() {
         <Table size="small">
           <TableHead><TableRow><TableCell>Person</TableCell><TableCell>Plan</TableCell><TableCell>Status</TableCell><TableCell>Renews</TableCell><TableCell /></TableRow></TableHead>
           <TableBody>
+            {subscriptions.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5}>No subscription records yet.</TableCell>
+              </TableRow>
+            ) : null}
             {subscriptions.map((item) => (
               <TableRow key={item.id} hover>
                 <TableCell sx={{ fontWeight: 700 }}>{holderName(item)}<Box sx={{ color: "text.secondary", fontSize: 12 }}>{titleCase(item.holder)}</Box></TableCell>

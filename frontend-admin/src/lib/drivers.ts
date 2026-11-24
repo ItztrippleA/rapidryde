@@ -13,6 +13,7 @@ export function emptyDriverProfile(): DriverProfile {
     colour: "",
     year: "",
     category: "Sedan",
+    fuelType: "",
     inspection: "not_scheduled",
     bankName: "",
     maskedAccount: "",
