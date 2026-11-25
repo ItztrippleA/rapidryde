@@ -340,8 +340,8 @@ export class DriversService {
             const alongRoute = destReady
               ? alongDestination(
                   {
-                    latitude: pickup.latitude,
-                    longitude: pickup.longitude,
+                    latitude: driver.latitude!,
+                    longitude: driver.longitude!,
                   },
                   drop,
                   {

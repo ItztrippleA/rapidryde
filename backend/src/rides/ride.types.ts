@@ -137,6 +137,8 @@ export type RideSession = {
   chat: ChatEvent[];
 
   note: string;
+  /** 4-digit code shown to rider + driver at pickup for verbal match. */
+  pickupPin: string;
   scheduledAt: number | null;
   startedAt: number;
   assignedAt: number | null;
@@ -146,6 +148,10 @@ export type RideSession = {
   createdAt: number;
   updatedAt: number;
 };
+
+export function makePickupPin() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
 
 export function emptyParty(id: string, name = '', phone = ''): RideParty {
   return { id, name, phone };
@@ -222,6 +228,10 @@ export function normalizeRide(
     locationTrail: Array.isArray(raw.locationTrail) ? raw.locationTrail : [],
     chat: Array.isArray(raw.chat) ? raw.chat : [],
     note: raw.note || '',
+    pickupPin:
+      typeof raw.pickupPin === 'string' && /^\d{4}$/.test(raw.pickupPin)
+        ? raw.pickupPin
+        : '',
     scheduledAt: raw.scheduledAt ?? null,
     startedAt: raw.startedAt || raw.createdAt || now,
     assignedAt: raw.assignedAt ?? null,

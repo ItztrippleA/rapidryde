@@ -16,6 +16,7 @@ import { SchedulerService } from '../scheduler/scheduler.service';
 import { PgStore } from '../storage/pg-store';
 import { RideBus } from './ride-bus';
 import {
+  makePickupPin,
   normalizeRide,
   type ChatEvent,
   type FareEvent,
@@ -262,6 +263,7 @@ export class RidesService {
         },
       ],
       note: input.note || '',
+      pickupPin: makePickupPin(),
       scheduledAt: input.scheduledAt ?? null,
       startedAt: now,
       createdAt: now,
@@ -374,8 +376,12 @@ export class RidesService {
         Number.isFinite(driver.destinationLat) &&
         Number.isFinite(driver.destinationLng);
       if (destReady) {
+        // Corridor = driver (C) → destination (A); rider drop must be near A or on that path.
         const along = alongDestination(
-          pickup,
+          {
+            latitude: driver.latitude!,
+            longitude: driver.longitude!,
+          },
           drop,
           {
             latitude: driver.destinationLat!,
@@ -516,6 +522,28 @@ export class RidesService {
       if (km > radiusKm + 0.05) continue;
       if (km > driverRadius + 0.05) continue;
 
+      const destOn = Boolean(presence.destinationEnabled);
+      const destReady =
+        destOn &&
+        presence.destinationLat != null &&
+        presence.destinationLng != null &&
+        Number.isFinite(presence.destinationLat) &&
+        Number.isFinite(presence.destinationLng);
+      if (destReady) {
+        const drop = {
+          latitude: ride.dropoff.latitude,
+          longitude: ride.dropoff.longitude,
+        };
+        if (
+          !alongDestination(here, drop, {
+            latitude: presence.destinationLat!,
+            longitude: presence.destinationLng!,
+          }, { nearKm: Number(presence.destinationRadiusKm ?? 8) })
+        ) {
+          continue;
+        }
+      }
+
       const app = await this.store.getDriverApplication(driverId);
       const bits = vehicleBits(app?.vehicle);
       const photo = String(
@@ -606,6 +634,27 @@ export class RidesService {
           longitude: ride.pickup.longitude,
         });
         if (km > radiusKm + 0.05) return null;
+        const destOn = Boolean(presence.destinationEnabled);
+        const destReady =
+          destOn &&
+          presence.destinationLat != null &&
+          presence.destinationLng != null &&
+          Number.isFinite(presence.destinationLat) &&
+          Number.isFinite(presence.destinationLng);
+        if (destReady) {
+          const drop = {
+            latitude: ride.dropoff.latitude,
+            longitude: ride.dropoff.longitude,
+          };
+          if (
+            !alongDestination(here, drop, {
+              latitude: presence.destinationLat!,
+              longitude: presence.destinationLng!,
+            }, { nearKm: Number(presence.destinationRadiusKm ?? 8) })
+          ) {
+            return null;
+          }
+        }
         const pickupMin = Math.max(1, Math.round((km / 25) * 60));
         return {
           id: ride.id,
@@ -723,7 +772,17 @@ export class RidesService {
   async get(id: string) {
     const ride = await this.store.getRide(id);
     if (!ride) throw new NotFoundException('Ride not found');
-    return ride;
+    return this.ensurePickupPin(ride);
+  }
+
+  /** Persist a 4-digit pickup code if the ride was created before this field existed. */
+  private async ensurePickupPin<T extends { pickupPin?: string; id: string }>(
+    ride: T,
+  ): Promise<T> {
+    if (/^\d{4}$/.test(ride.pickupPin || '')) return ride;
+    const next = { ...ride, pickupPin: makePickupPin() };
+    await this.store.upsertRide(normalizeRide(next as never));
+    return next;
   }
 
   async activeFor(userId: string, role: 'customer' | 'driver' | 'admin') {
@@ -855,6 +914,15 @@ export class RidesService {
     if (status === 'arrived') next.arrivedAt = now;
     if (status === 'on_trip') next.onboardAt = now;
     if (status === 'to_pickup' && !next.assignedAt) next.assignedAt = now;
+    // Always keep a pickup code once a driver is involved (arrive UI + verbal match).
+    if (
+      (status === 'assigned' ||
+        status === 'to_pickup' ||
+        status === 'arrived') &&
+      !/^\d{4}$/.test(next.pickupPin || '')
+    ) {
+      next.pickupPin = makePickupPin();
+    }
     if (
       status === 'completed' ||
       status === 'cancelled' ||
@@ -871,10 +939,17 @@ export class RidesService {
     }
     next.updatedAt = now;
     await this.store.upsertRide(next);
-    this.bus.toRide(id, 'ride:stage', { stage: status, id });
+    const stagePayload = {
+      stage: status,
+      id,
+      ...(next.pickupPin && /^\d{4}$/.test(next.pickupPin)
+        ? { pickupPin: next.pickupPin }
+        : {}),
+    };
+    this.bus.toRide(id, 'ride:stage', stagePayload);
     // Always mirror stage to the rider's user room — they may not be in ride:{id}
     // (matching → trip handoff, backgrounded, or reconnect before ride:join).
-    this.bus.toUser(next.customerId, 'ride:stage', { stage: status, id });
+    this.bus.toUser(next.customerId, 'ride:stage', stagePayload);
     // Drivers listen on ride:cancelled (HTTP stage alone was only ride:stage).
     if (status === 'cancelled') {
       this.bus.toRide(id, 'ride:cancelled', { id, by });
@@ -1229,6 +1304,7 @@ export class RidesService {
       onboardAt: ride.onboardAt,
       endedAt: ride.endedAt,
       updatedAt: ride.updatedAt,
+      pickupPin: ride.pickupPin || null,
     };
   }
 
