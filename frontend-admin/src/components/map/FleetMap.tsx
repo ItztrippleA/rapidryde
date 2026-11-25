@@ -320,7 +320,8 @@ function LinkPolylines({
   useEffect(() => {
     if (!map || typeof google === "undefined") return;
     const lines: google.maps.Polyline[] = [];
-    const labels: google.maps.Marker[] = [];
+    const labels: google.maps.marker.AdvancedMarkerElement[] = [];
+    const MarkerEl = google.maps.marker?.AdvancedMarkerElement;
     for (const link of links) {
       const from = resolvePoint(city, link.fromLat, link.fromLng, link.fromX, link.fromY);
       const to = resolvePoint(city, link.toLat, link.toLng, link.toX, link.toY);
@@ -346,27 +347,31 @@ function LinkPolylines({
               ],
         }),
       );
-      if (link.label && active) {
+      if (link.label && active && MarkerEl) {
+        const chip = document.createElement("div");
+        chip.textContent = link.label;
+        chip.style.cssText = [
+          "color:" + color,
+          "font:700 12px/1.2 'DM Sans',Inter,sans-serif",
+          "white-space:nowrap",
+          "pointer-events:none",
+          "text-shadow:0 1px 2px rgba(0,0,0,0.65)",
+        ].join(";");
         labels.push(
-          new google.maps.Marker({
+          new MarkerEl({
             map,
             position: { lat: (from.lat + to.lat) / 2, lng: (from.lng + to.lng) / 2 },
-            clickable: false,
-            icon: { path: google.maps.SymbolPath.CIRCLE, scale: 0 },
-            label: {
-              text: link.label,
-              color,
-              fontSize: "12px",
-              fontWeight: "700",
-              fontFamily: "DM Sans, Inter, sans-serif",
-            },
+            content: chip,
+            gmpClickable: false,
           }),
         );
       }
     }
     return () => {
       for (const line of lines) line.setMap(null);
-      for (const label of labels) label.setMap(null);
+      for (const label of labels) {
+        label.map = null;
+      }
     };
   }, [map, links, city, selectedSearcher]);
   return null;
@@ -555,7 +560,7 @@ export function FleetMap({
           </Typography>
         </Box>
       ) : (
-        <APIProvider apiKey={key}>
+        <APIProvider apiKey={key} libraries={["marker"]}>
           <MapBody
             city={city}
             regions={regions}

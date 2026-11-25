@@ -550,7 +550,14 @@ export function DriversView() {
             </>
           ) : null}
         </Editor>
-        <RideDetailDialog ride={rideDetail} onClose={() => setRideDetail(null)} />
+        <RideDetailDialog
+          ride={rideDetail}
+          onClose={() => setRideDetail(null)}
+          onUpdated={(next) => {
+            setDriverRides((rows) => rows.map((row) => (row.id === next.id ? { ...row, ...next } : row)));
+            setRideDetail(null);
+          }}
+        />
       </Box>
     );
   }

@@ -4,9 +4,11 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
@@ -15,9 +17,19 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 import { useCallback, useEffect, useState } from "react";
+import { useSession } from "@/components/access/Gate";
 import { PageHeader, Pill } from "@/components/ui/Chrome";
 import { adminLogin, api, hasApi } from "@/lib/api";
 import { naira, titleCase } from "@/lib/format";
+
+const OPEN_STATUSES = new Set([
+  "searching",
+  "scheduled",
+  "assigned",
+  "to_pickup",
+  "arrived",
+  "on_trip",
+]);
 
 export type SessionRow = {
   id: string;
@@ -62,93 +74,189 @@ function statusTone(status: string): "ok" | "warn" | "hot" | "off" {
 export function RideDetailDialog({
   ride,
   onClose,
+  onUpdated,
 }: {
   ride: SessionRow | null;
   onClose: () => void;
+  /** Called after desk completes or cancels so lists can refresh. */
+  onUpdated?: (ride: SessionRow) => void;
 }) {
+  const { canEdit } = useSession();
+  const [busy, setBusy] = useState<"complete" | "cancel" | null>(null);
+  const [actionError, setActionError] = useState("");
+  const [confirm, setConfirm] = useState<"complete" | "cancel" | null>(null);
+
+  const open = Boolean(ride) && OPEN_STATUSES.has(ride?.status || "");
+  const showActions = Boolean(canEdit("rides") && hasApi() && open);
+
+  async function applyStage(status: "completed" | "cancelled") {
+    if (!ride || busy) return;
+    setBusy(status === "completed" ? "complete" : "cancel");
+    setActionError("");
+    try {
+      const { token } = await adminLogin();
+      const next = await api<SessionRow>(`/rides/${encodeURIComponent(ride.id)}/stage`, {
+        method: "POST",
+        token,
+        body: JSON.stringify({
+          status,
+          note: status === "completed" ? "Completed by desk" : "Cancelled by desk",
+        }),
+      });
+      setConfirm(null);
+      onUpdated?.(next);
+      onClose();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not update ride");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
-    <Dialog open={Boolean(ride)} onClose={onClose} fullWidth maxWidth="sm">
-      {ride ? (
-        <>
-          <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, pr: 2 }}>
-            <Box>
-              <Typography variant="h2" component="span">
-                Ride details
-              </Typography>
-              <Typography color="text.secondary" sx={{ fontSize: 13, mt: 0.4, fontFamily: "ui-monospace, monospace" }}>
-                {ride.id}
-              </Typography>
-            </Box>
-            <Pill tone={statusTone(ride.status)}>{titleCase(ride.status)}</Pill>
-          </DialogTitle>
-          <DialogContent dividers sx={{ display: "grid", gap: 1.5 }}>
-            <Typography color="text.secondary" sx={{ fontSize: 14 }}>
-              {whenOf(ride)} · {ride.city || "abuja"} · {ride.classLabel || ride.classId || "—"}
-            </Typography>
-            <Typography sx={{ fontSize: 14 }}>
-              Payment {ride.payment || "cash"} · Quoted {naira(ride.quoted || ride.fare)} · Fare {naira(ride.fare)}
-              {ride.earnings != null ? ` · Driver earnings ${naira(ride.earnings)}` : ""}
-              {ride.plannedKm != null ? ` · ${ride.plannedKm} km` : ""}
-            </Typography>
-            <Box>
-              <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.4 }}>People</Typography>
-              <Typography sx={{ fontSize: 14 }}>
-                Customer: {ride.customer?.name || "—"} ({ride.customer?.phone || ride.customerId || "—"})
-              </Typography>
-              <Typography sx={{ fontSize: 14 }}>
-                Driver: {ride.driver?.name || "Unassigned"}
-                {ride.driver?.phone ? ` (${ride.driver.phone})` : ride.driverId ? ` (${ride.driverId})` : ""}
-              </Typography>
-            </Box>
-            <Box>
-              <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.4 }}>Route</Typography>
-              <Typography sx={{ fontSize: 14 }}>
-                Pickup {labelOf(ride.pickup)}
-                {typeof ride.pickup !== "string" && ride.pickup?.latitude
-                  ? ` · ${ride.pickup.latitude.toFixed(4)}, ${ride.pickup.longitude.toFixed(4)}`
-                  : ""}
-              </Typography>
-              <Typography sx={{ fontSize: 14 }}>
-                Dropoff {labelOf(ride.dropoff)}
-                {typeof ride.dropoff !== "string" && ride.dropoff?.latitude
-                  ? ` · ${ride.dropoff.latitude.toFixed(4)}, ${ride.dropoff.longitude.toFixed(4)}`
-                  : ""}
-              </Typography>
-            </Box>
-            {ride.driverLocation ? (
-              <Typography color="text.secondary" sx={{ fontSize: 13 }}>
-                Driver last seen {ride.driverLocation.latitude.toFixed(4)}, {ride.driverLocation.longitude.toFixed(4)}
-                {ride.driverLocation.at ? ` · ${new Date(ride.driverLocation.at).toLocaleTimeString()}` : ""}
-              </Typography>
-            ) : null}
-            {ride.customerLocation ? (
-              <Typography color="text.secondary" sx={{ fontSize: 13 }}>
-                Customer last seen {ride.customerLocation.latitude.toFixed(4)},{" "}
-                {ride.customerLocation.longitude.toFixed(4)}
-              </Typography>
-            ) : null}
-            {ride.statusHistory?.length ? (
+    <>
+      <Dialog
+        open={Boolean(ride)}
+        onClose={() => {
+          if (busy) return;
+          onClose();
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        {ride ? (
+          <>
+            <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, pr: 2 }}>
               <Box>
-                <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.6 }}>Status history</Typography>
-                <Box sx={{ display: "grid", gap: 0.4 }}>
-                  {ride.statusHistory.map((event, index) => (
-                    <Typography key={`${event.at}-${index}`} color="text.secondary" sx={{ fontSize: 13 }}>
-                      {new Date(event.at).toLocaleString()} · {event.status}
-                      {event.note ? ` · ${event.note}` : ""}
-                    </Typography>
-                  ))}
-                </Box>
+                <Typography variant="h2" component="span">
+                  Ride details
+                </Typography>
+                <Typography color="text.secondary" sx={{ fontSize: 13, mt: 0.4, fontFamily: "ui-monospace, monospace" }}>
+                  {ride.id}
+                </Typography>
               </Box>
-            ) : null}
-          </DialogContent>
-          <DialogActions sx={{ px: 3, py: 1.5 }}>
-            <Button onClick={onClose} variant="contained">
-              Close
-            </Button>
-          </DialogActions>
-        </>
-      ) : null}
-    </Dialog>
+              <Pill tone={statusTone(ride.status)}>{titleCase(ride.status)}</Pill>
+            </DialogTitle>
+            <DialogContent dividers sx={{ display: "grid", gap: 1.5 }}>
+              {actionError ? (
+                <Alert severity="error" onClose={() => setActionError("")}>
+                  {actionError}
+                </Alert>
+              ) : null}
+              <Typography color="text.secondary" sx={{ fontSize: 14 }}>
+                {whenOf(ride)} · {ride.city || "abuja"} · {ride.classLabel || ride.classId || "—"}
+              </Typography>
+              <Typography sx={{ fontSize: 14 }}>
+                Payment {ride.payment || "cash"} · Quoted {naira(ride.quoted || ride.fare)} · Fare {naira(ride.fare)}
+                {ride.earnings != null ? ` · Driver earnings ${naira(ride.earnings)}` : ""}
+                {ride.plannedKm != null ? ` · ${ride.plannedKm} km` : ""}
+              </Typography>
+              <Box>
+                <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.4 }}>People</Typography>
+                <Typography sx={{ fontSize: 14 }}>
+                  Customer: {ride.customer?.name || "—"} ({ride.customer?.phone || ride.customerId || "—"})
+                </Typography>
+                <Typography sx={{ fontSize: 14 }}>
+                  Driver: {ride.driver?.name || "Unassigned"}
+                  {ride.driver?.phone ? ` (${ride.driver.phone})` : ride.driverId ? ` (${ride.driverId})` : ""}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.4 }}>Route</Typography>
+                <Typography sx={{ fontSize: 14 }}>
+                  Pickup {labelOf(ride.pickup)}
+                  {typeof ride.pickup !== "string" && ride.pickup?.latitude
+                    ? ` · ${ride.pickup.latitude.toFixed(4)}, ${ride.pickup.longitude.toFixed(4)}`
+                    : ""}
+                </Typography>
+                <Typography sx={{ fontSize: 14 }}>
+                  Dropoff {labelOf(ride.dropoff)}
+                  {typeof ride.dropoff !== "string" && ride.dropoff?.latitude
+                    ? ` · ${ride.dropoff.latitude.toFixed(4)}, ${ride.dropoff.longitude.toFixed(4)}`
+                    : ""}
+                </Typography>
+              </Box>
+              {ride.driverLocation ? (
+                <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+                  Driver last seen {ride.driverLocation.latitude.toFixed(4)}, {ride.driverLocation.longitude.toFixed(4)}
+                  {ride.driverLocation.at ? ` · ${new Date(ride.driverLocation.at).toLocaleTimeString()}` : ""}
+                </Typography>
+              ) : null}
+              {ride.customerLocation ? (
+                <Typography color="text.secondary" sx={{ fontSize: 13 }}>
+                  Customer last seen {ride.customerLocation.latitude.toFixed(4)},{" "}
+                  {ride.customerLocation.longitude.toFixed(4)}
+                </Typography>
+              ) : null}
+              {ride.statusHistory?.length ? (
+                <Box>
+                  <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.6 }}>Status history</Typography>
+                  <Box sx={{ display: "grid", gap: 0.4 }}>
+                    {ride.statusHistory.map((event, index) => (
+                      <Typography key={`${event.at}-${index}`} color="text.secondary" sx={{ fontSize: 13 }}>
+                        {new Date(event.at).toLocaleString()} · {event.status}
+                        {event.note ? ` · ${event.note}` : ""}
+                      </Typography>
+                    ))}
+                  </Box>
+                </Box>
+              ) : null}
+            </DialogContent>
+            <DialogActions sx={{ px: 3, py: 1.5, gap: 1, flexWrap: "wrap" }}>
+              {showActions ? (
+                <>
+                  <Button
+                    color="error"
+                    variant="outlined"
+                    disabled={Boolean(busy)}
+                    onClick={() => setConfirm("cancel")}
+                  >
+                    Cancel trip
+                  </Button>
+                  <Button
+                    color="success"
+                    variant="contained"
+                    disabled={Boolean(busy)}
+                    onClick={() => setConfirm("complete")}
+                  >
+                    Complete trip
+                  </Button>
+                </>
+              ) : null}
+              <Box sx={{ flex: 1 }} />
+              <Button onClick={onClose} variant={showActions ? "text" : "contained"} disabled={Boolean(busy)}>
+                Close
+              </Button>
+            </DialogActions>
+          </>
+        ) : null}
+      </Dialog>
+
+      <Dialog open={Boolean(confirm)} onClose={() => !busy && setConfirm(null)} fullWidth maxWidth="xs">
+        <DialogTitle>{confirm === "complete" ? "Complete this trip?" : "Cancel this trip?"}</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            {confirm === "complete"
+              ? "Marks the ride completed for customer and driver, settles earnings, and clears the active trip."
+              : "Cancels the ride for both sides and frees the driver if they were assigned."}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setConfirm(null)} disabled={Boolean(busy)}>
+            Back
+          </Button>
+          <Button
+            color={confirm === "cancel" ? "error" : "success"}
+            variant="contained"
+            disabled={Boolean(busy)}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
+            onClick={() => void applyStage(confirm === "complete" ? "completed" : "cancelled")}
+          >
+            {busy ? "Saving…" : confirm === "complete" ? "Complete" : "Cancel trip"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 }
 
@@ -257,7 +365,14 @@ export function RidesView() {
         </Table>
       </Box>
 
-      <RideDetailDialog ride={selected} onClose={() => setSelected(null)} />
+      <RideDetailDialog
+        ride={selected}
+        onClose={() => setSelected(null)}
+        onUpdated={(next) => {
+          setSessions((rows) => rows.map((row) => (row.id === next.id ? { ...row, ...next } : row)));
+          setSelected(null);
+        }}
+      />
     </Box>
   );
 }
