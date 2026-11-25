@@ -833,6 +833,14 @@ export class RidesService {
     next.updatedAt = now;
     await this.store.upsertRide(next);
     this.bus.toRide(id, 'ride:stage', { stage: status, id });
+    // Drivers listen on ride:cancelled (HTTP stage alone was only ride:stage).
+    if (status === 'cancelled') {
+      this.bus.toRide(id, 'ride:cancelled', { id });
+      this.bus.toUser(next.customerId, 'ride:cancelled', { id });
+      if (next.driverId) {
+        this.bus.toDriver(next.driverId, 'ride:cancelled', { id });
+      }
+    }
 
     if (next.driverId) {
       if (status === 'on_trip') {
@@ -927,14 +935,22 @@ export class RidesService {
           ? 'Driver has arrived'
           : status === 'on_trip'
             ? 'Trip started'
-            : 'Trip update',
+            : status === 'completed'
+              ? 'Trip completed'
+              : status === 'cancelled'
+                ? 'Trip cancelled'
+                : 'Trip update',
       body: embarking
         ? 'Your driver is heading to pickup.'
         : status === 'arrived'
           ? `Your driver has arrived. You have ${freeWait} minutes of free waiting time before additional charges apply.`
           : status === 'on_trip'
             ? 'You are on the trip.'
-            : status,
+            : status === 'completed'
+              ? 'This trip was marked complete.'
+              : status === 'cancelled'
+                ? 'This trip was cancelled by the desk.'
+                : status,
       data: { rideId: id, stage: status },
     });
     return next;
@@ -960,6 +976,36 @@ export class RidesService {
     next.updatedAt = now;
     await this.store.upsertRide(next);
     return next;
+  }
+
+  /** Trips beyond this distance require a driver bid the rider accepts. */
+  static readonly DRIVER_BID_KM = 25;
+
+  requiresDriverBid(ride: { plannedKm?: number }) {
+    return Number(ride.plannedKm) > RidesService.DRIVER_BID_KM;
+  }
+
+  /**
+   * Rider picks a driver bid — assigns that driver and starts the trip.
+   */
+  async chooseDriver(
+    rideId: string,
+    customerId: string,
+    driverId: string,
+    fare?: number,
+  ) {
+    const ride = await this.get(rideId);
+    if (ride.customerId !== customerId) {
+      throw new ForbiddenException('Not your ride');
+    }
+    if (ride.status !== 'searching') {
+      throw new BadRequestException('Ride is not open for bidding');
+    }
+    const bidFare =
+      Number.isFinite(fare) && Number(fare) > 0 ? Number(fare) : undefined;
+    return this.assign(rideId, driverId, {
+      fare: bidFare,
+    });
   }
 
   /** Driver fare adjust while searching — notify customer as a bid card. */
