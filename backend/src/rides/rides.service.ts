@@ -149,10 +149,15 @@ export class RidesService {
       classId: input.classId,
       promoCode: input.promoCode,
     });
-    const fare =
+    const baseFare =
       input.fareOverride && input.fareOverride > 0
         ? input.fareOverride
         : quote.fare;
+    const pendingCancel = await this.store.consumePendingCancelFee(
+      input.customerId,
+    );
+    const cancelFee = Math.max(0, Math.round(pendingCancel.amount));
+    const fare = baseFare + cancelFee;
     const commissionPercent = factors.commissionPercent;
     const earnings = Math.round(fare * (1 - commissionPercent / 100));
     const classId = input.classId || 'ryde';
@@ -160,6 +165,29 @@ export class RidesService {
       factors.classes.find((item) => item.id === classId)?.label || classId;
     const now = Date.now();
     const user = await this.store.findUserById(input.customerId);
+    const charges = [
+      makeCharge({
+        kind: 'base',
+        amount: baseFare,
+        idempotencyKey: `base_${now.toString(36)}`,
+        note: 'Initial quote',
+        at: now,
+      }),
+    ];
+    if (cancelFee > 0) {
+      charges.push(
+        makeCharge({
+          kind: 'cancellation',
+          amount: cancelFee,
+          idempotencyKey: `cancel_fee_${now.toString(36)}`,
+          note: 'Prior cancellation fee',
+          at: now,
+          meta: {
+            priorRides: pendingCancel.items.map((item) => item.rideId).join(','),
+          },
+        }),
+      );
+    }
 
     const ride = normalizeRide({
       id: `ride_${now.toString(36)}`,
@@ -201,15 +229,7 @@ export class RidesService {
         source: routed.source,
         computedAt: routed.computedAt,
       },
-      charges: [
-        makeCharge({
-          kind: 'base',
-          amount: fare,
-          idempotencyKey: `base_${now.toString(36)}`,
-          note: 'Initial quote',
-          at: now,
-        }),
-      ],
+      charges,
       quoted: quote.fare,
       fare,
       earnings,
@@ -235,7 +255,10 @@ export class RidesService {
           quoted: quote.fare,
           at: now,
           by: 'customer',
-          note: 'Initial quote',
+          note:
+            cancelFee > 0
+              ? `Initial quote + ₦${cancelFee} prior cancel fee`
+              : 'Initial quote',
         },
       ],
       note: input.note || '',
@@ -321,11 +344,14 @@ export class RidesService {
       photo?: string;
     };
 
+    const isAlong = Boolean(ride.along) || ride.classId === 'along';
     const matches: Match[] = [];
     let nearestKm: number | null = null;
     let nearestId: string | null = null;
     for (const driver of available) {
       if (await this.driverDeclined(driver.driverId, rideId)) continue;
+      // Along shared rides only go to drivers who opted into Along.
+      if (isAlong && !driver.alongEnabled) continue;
       const km = kmBetween(
         { latitude: driver.latitude!, longitude: driver.longitude! },
         pickup,
@@ -477,8 +503,11 @@ export class RidesService {
       }
       set.add(id);
     }
+    const alongOn = Boolean(presence.alongEnabled);
     for (const ride of rides) {
       if (declinedIds.has(ride.id) || this.declinedByDriver.get(driverId)?.has(ride.id)) continue;
+      const rideAlong = Boolean(ride.along) || ride.classId === 'along';
+      if (rideAlong && !alongOn) continue;
       const pickup = {
         latitude: ride.pickup.latitude,
         longitude: ride.pickup.longitude,
@@ -519,7 +548,7 @@ export class RidesService {
         fareTalk: 'agreed' as const,
         classId: ride.classId || 'ryde',
         classLabel: ride.classLabel || 'Ryde',
-        along: Boolean(ride.along) || ride.classId === 'along',
+        along: rideAlong,
       });
 
       // Offer to driver only — customer waits for accept or fare bid.
@@ -566,9 +595,12 @@ export class RidesService {
       }
       set.add(id);
     }
+    const alongOn = Boolean(presence.alongEnabled);
     return rides
       .map((ride) => {
         if (declinedIds.has(ride.id)) return null;
+        const rideAlong = Boolean(ride.along) || ride.classId === 'along';
+        if (rideAlong && !alongOn) return null;
         const km = kmBetween(here, {
           latitude: ride.pickup.latitude,
           longitude: ride.pickup.longitude,
@@ -598,7 +630,7 @@ export class RidesService {
           fareTalk: 'agreed' as const,
           classId: ride.classId || 'ryde',
           classLabel: ride.classLabel || 'Ryde',
-          along: Boolean(ride.along) || ride.classId === 'along',
+          along: rideAlong,
         };
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row))
@@ -610,6 +642,12 @@ export class RidesService {
   async createOrJoinPool(
     input: CreateRideInput & { customerId: string; joinPoolId?: string },
   ) {
+    const prefs = await this.store.getCustomerRidePrefs(input.customerId);
+    if (!prefs.alongEnabled) {
+      throw new BadRequestException(
+        'Turn on Along in the app to share a ride with others.',
+      );
+    }
     let poolId = input.joinPoolId;
     if (!poolId) {
       const now = Date.now();
@@ -811,6 +849,7 @@ export class RidesService {
   ) {
     const now = Date.now();
     const next = await this.get(id);
+    const priorStatus = next.status;
     next.status = status;
     next.statusHistory.push({ status, at: now, by, note });
     if (status === 'arrived') next.arrivedAt = now;
@@ -839,6 +878,10 @@ export class RidesService {
       this.bus.toUser(next.customerId, 'ride:cancelled', { id });
       if (next.driverId) {
         this.bus.toDriver(next.driverId, 'ride:cancelled', { id });
+      }
+      // Customer cancel after a driver was assigned → fee on their next trip (silent).
+      if (by === 'customer') {
+        void this.recordCustomerCancelFee(next, priorStatus, note);
       }
     }
 
@@ -1180,5 +1223,37 @@ export class RidesService {
       endedAt: ride.endedAt,
       updatedAt: ride.updatedAt,
     };
+  }
+
+  /** Queue cancellationFee for the next ride when the rider cancels after assign. */
+  private async recordCustomerCancelFee(
+    ride: Awaited<ReturnType<RidesService['get']>>,
+    priorStatus: RideStatus,
+    reason?: string,
+  ) {
+    const chargedStages = new Set([
+      'assigned',
+      'to_pickup',
+      'arrived',
+      'on_trip',
+    ]);
+    if (!ride.driverId && !chargedStages.has(priorStatus)) return;
+    if (!chargedStages.has(priorStatus) && !ride.assignedAt) return;
+    try {
+      const factors = await this.pricing.getFactors();
+      const amount = Math.max(0, Math.round(Number(factors.cancellationFee) || 0));
+      if (!amount) return;
+      await this.store.addPendingCancelFee(ride.customerId, {
+        rideId: ride.id,
+        amount,
+        reason: (reason || '').trim() || 'Cancelled by customer',
+      });
+    } catch (error) {
+      this.log.warn(
+        `cancel fee not recorded for ${ride.id}: ${
+          error instanceof Error ? error.message : 'unknown'
+        }`,
+      );
+    }
   }
 }

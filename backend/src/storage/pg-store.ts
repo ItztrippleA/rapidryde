@@ -144,6 +144,7 @@ ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_label TEXT;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_lat DOUBLE PRECISION;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_lng DOUBLE PRECISION;
 ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS destination_radius_km DOUBLE PRECISION NOT NULL DEFAULT 8;
+ALTER TABLE driver_presence ADD COLUMN IF NOT EXISTS along_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS ride_pools (
   id TEXT PRIMARY KEY,
@@ -437,6 +438,76 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
       [key, value, Date.now()],
     );
+  }
+
+  async deleteKv(key: string) {
+    await this.pool.query(`DELETE FROM app_kv WHERE key = $1`, [key]);
+  }
+
+  private cancelFeeKey(customerId: string) {
+    return `customer_cancel_fee:${customerId}`;
+  }
+
+  /** Pending cancellation fees rolled onto the customer's next trip. */
+  async getPendingCancelFee(customerId: string): Promise<{
+    amount: number;
+    items: { rideId: string; amount: number; reason: string; at: number }[];
+  }> {
+    const raw = await this.getKv(this.cancelFeeKey(customerId));
+    if (!raw) return { amount: 0, items: [] };
+    try {
+      const parsed = JSON.parse(raw) as {
+        amount?: number;
+        items?: { rideId: string; amount: number; reason: string; at: number }[];
+      };
+      const items = Array.isArray(parsed.items) ? parsed.items : [];
+      const amount = Math.max(
+        0,
+        Math.round(
+          Number.isFinite(parsed.amount)
+            ? Number(parsed.amount)
+            : items.reduce((sum, item) => sum + (item.amount || 0), 0),
+        ),
+      );
+      return { amount, items };
+    } catch {
+      return { amount: 0, items: [] };
+    }
+  }
+
+  async addPendingCancelFee(
+    customerId: string,
+    entry: { rideId: string; amount: number; reason: string },
+  ) {
+    const amount = Math.max(0, Math.round(entry.amount));
+    if (!amount) return this.getPendingCancelFee(customerId);
+    const current = await this.getPendingCancelFee(customerId);
+    if (current.items.some((item) => item.rideId === entry.rideId)) {
+      return current;
+    }
+    const next = {
+      amount: current.amount + amount,
+      items: [
+        ...current.items,
+        {
+          rideId: entry.rideId,
+          amount,
+          reason: entry.reason || '',
+          at: Date.now(),
+        },
+      ],
+    };
+    await this.setKv(this.cancelFeeKey(customerId), JSON.stringify(next));
+    return next;
+  }
+
+  /** Read + clear pending cancel fees (applied onto a new ride). */
+  async consumePendingCancelFee(customerId: string) {
+    const current = await this.getPendingCancelFee(customerId);
+    if (current.amount > 0) {
+      await this.deleteKv(this.cancelFeeKey(customerId));
+    }
+    return current;
   }
 
   async findUserById(id: string) {
@@ -1018,6 +1089,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     destinationLat?: number | null;
     destinationLng?: number | null;
     destinationRadiusKm?: number | null;
+    alongEnabled?: boolean | null;
   }) {
     const now = Date.now();
     const current = await this.getPresence(row.driverId);
@@ -1046,12 +1118,14 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       : null;
     const destinationRadiusKm =
       row.destinationRadiusKm ?? current?.destinationRadiusKm ?? 8;
+    const alongEnabled = row.alongEnabled ?? current?.alongEnabled ?? false;
     await this.pool.query(
       `INSERT INTO driver_presence (
          driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at,
          max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km,
-         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km,
+         along_enabled
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        ON CONFLICT (driver_id) DO UPDATE SET
          status = EXCLUDED.status,
          city = COALESCE(EXCLUDED.city, driver_presence.city),
@@ -1069,7 +1143,8 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          destination_label = EXCLUDED.destination_label,
          destination_lat = EXCLUDED.destination_lat,
          destination_lng = EXCLUDED.destination_lng,
-         destination_radius_km = EXCLUDED.destination_radius_km`,
+         destination_radius_km = EXCLUDED.destination_radius_km,
+         along_enabled = EXCLUDED.along_enabled`,
       [
         row.driverId,
         row.status,
@@ -1089,6 +1164,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         destinationLat,
         destinationLng,
         destinationRadiusKm,
+        alongEnabled,
       ],
     );
     return this.getPresence(row.driverId);
@@ -1151,6 +1227,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     destinationLat?: number | null;
     destinationLng?: number | null;
     destinationRadiusKm?: number | null;
+    alongEnabled?: boolean | null;
   }) {
     const current = await this.getPresence(row.driverId);
     const maxKm =
@@ -1178,14 +1255,16 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       : null;
     const destinationRadiusKm =
       row.destinationRadiusKm ?? current?.destinationRadiusKm ?? 8;
+    const alongEnabled = row.alongEnabled ?? current?.alongEnabled ?? false;
     const now = Date.now();
     const city = (row.city || current?.city || 'abuja').toLowerCase();
     await this.pool.query(
       `INSERT INTO driver_presence (
          driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at,
          max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km,
-         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km
-       ) VALUES ($1,'available',$2,$3,$4,$5,NULL,NULL,TRUE,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km,
+         along_enabled
+       ) VALUES ($1,'available',$2,$3,$4,$5,NULL,NULL,TRUE,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        ON CONFLICT (driver_id) DO UPDATE SET
          status = CASE
            WHEN driver_presence.status IN ('on_trip', 'busy') THEN driver_presence.status
@@ -1212,7 +1291,8 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          destination_label = EXCLUDED.destination_label,
          destination_lat = EXCLUDED.destination_lat,
          destination_lng = EXCLUDED.destination_lng,
-         destination_radius_km = EXCLUDED.destination_radius_km`,
+         destination_radius_km = EXCLUDED.destination_radius_km,
+         along_enabled = EXCLUDED.along_enabled`,
       [
         row.driverId,
         city,
@@ -1228,6 +1308,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         destinationLat,
         destinationLng,
         destinationRadiusKm,
+        alongEnabled,
       ],
     );
     return this.getPresence(row.driverId);
@@ -1245,6 +1326,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       destinationLat?: number | null;
       destinationLng?: number | null;
       destinationRadiusKm?: number | null;
+      alongEnabled?: boolean | null;
     },
   ) {
     const current = await this.getPresence(driverId);
@@ -1266,6 +1348,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         destinationLat: body.destinationLat,
         destinationLng: body.destinationLng,
         destinationRadiusKm: body.destinationRadiusKm,
+        alongEnabled: body.alongEnabled,
       });
     }
     const maxKm =
@@ -1293,6 +1376,10 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       : null;
     const destinationRadiusKm =
       body.destinationRadiusKm ?? current.destinationRadiusKm ?? 8;
+    const alongEnabled =
+      body.alongEnabled != null
+        ? Boolean(body.alongEnabled)
+        : Boolean(current.alongEnabled);
     await this.pool.query(
       `UPDATE driver_presence SET
          max_dispatch_radius_km = $2,
@@ -1302,7 +1389,8 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
          destination_label = $6,
          destination_lat = $7,
          destination_lng = $8,
-         destination_radius_km = $9
+         destination_radius_km = $9,
+         along_enabled = $10
        WHERE driver_id = $1`,
       [
         driverId,
@@ -1314,6 +1402,7 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         destinationLat,
         destinationLng,
         destinationRadiusKm,
+        alongEnabled,
       ],
     );
     return this.getPresence(driverId);
@@ -1416,7 +1505,38 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
         row.destination_radius_km != null
           ? Number(row.destination_radius_km)
           : 8,
+      alongEnabled: Boolean(row.along_enabled),
     };
+  }
+
+  private customerPrefsKey(userId: string) {
+    return `customer_ride_prefs:${userId}`;
+  }
+
+  async getCustomerRidePrefs(userId: string): Promise<{ alongEnabled: boolean }> {
+    const raw = await this.getKv(this.customerPrefsKey(userId));
+    if (!raw) return { alongEnabled: false };
+    try {
+      const parsed = JSON.parse(raw) as { alongEnabled?: boolean };
+      return { alongEnabled: Boolean(parsed.alongEnabled) };
+    } catch {
+      return { alongEnabled: false };
+    }
+  }
+
+  async setCustomerRidePrefs(
+    userId: string,
+    prefs: { alongEnabled?: boolean },
+  ) {
+    const current = await this.getCustomerRidePrefs(userId);
+    const next = {
+      alongEnabled:
+        prefs.alongEnabled != null
+          ? Boolean(prefs.alongEnabled)
+          : current.alongEnabled,
+    };
+    await this.setKv(this.customerPrefsKey(userId), JSON.stringify(next));
+    return next;
   }
 
   async upsertPool(pool: {

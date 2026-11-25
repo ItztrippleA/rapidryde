@@ -15,6 +15,7 @@ type DestinationPrefs = {
   destinationLat?: number | null;
   destinationLng?: number | null;
   destinationRadiusKm?: number | null;
+  alongEnabled?: boolean;
 };
 
 /** Coerce unknown JSON fields to a string without Object stringification. */
@@ -54,14 +55,9 @@ export class DriversService {
       body.longitude != null && Number.isFinite(body.longitude)
         ? body.longitude
         : (current?.longitude ?? null);
-    // Duty re-asserts (timer / socket reconnect) must not yank a driver off an
-    // active ride back onto the nearby board as "available".
-    const onTrip =
-      current != null &&
-      (current.status === 'on_trip' || current.status === 'busy');
-    return this.store.upsertPresence({
+    // SQL-level CASE keeps on_trip/busy — do not snapshot-race back to available.
+    return this.store.assertPresenceOnline({
       driverId,
-      status: onTrip ? current.status : 'available',
       city: (body.city || current?.city || 'abuja').toLowerCase(),
       latitude,
       longitude,
@@ -69,9 +65,6 @@ export class DriversService {
         body.heading != null && Number.isFinite(body.heading)
           ? body.heading
           : (current?.heading ?? null),
-      activeRideId: onTrip ? (current.activeRideId ?? null) : null,
-      poolId: onTrip ? (current.poolId ?? null) : null,
-      online: true,
       maxDispatchRadiusKm: body.maxDispatchRadiusKm,
       expandRadiusWhenIdle: body.expandRadiusWhenIdle,
       // Leave effective alone unless the client sent it — store merges undefined.
@@ -81,6 +74,7 @@ export class DriversService {
       destinationLat: body.destinationLat,
       destinationLng: body.destinationLng,
       destinationRadiusKm: body.destinationRadiusKm,
+      alongEnabled: body.alongEnabled,
     });
   }
 
@@ -92,17 +86,7 @@ export class DriversService {
       effectiveRadiusKm?: number;
     } & DestinationPrefs,
   ) {
-    const current = await this.store.getPresence(driverId);
-    return this.store.upsertPresence({
-      driverId,
-      status: current?.status ?? 'offline',
-      city: current?.city ?? undefined,
-      latitude: current?.latitude ?? null,
-      longitude: current?.longitude ?? null,
-      heading: current?.heading ?? null,
-      activeRideId: current?.activeRideId ?? null,
-      poolId: current?.poolId ?? null,
-      online: current?.online ?? false,
+    return await this.store.patchPresencePreferences(driverId, {
       maxDispatchRadiusKm: body.maxDispatchRadiusKm,
       expandRadiusWhenIdle: body.expandRadiusWhenIdle,
       effectiveRadiusKm: body.effectiveRadiusKm,
@@ -111,6 +95,7 @@ export class DriversService {
       destinationLat: body.destinationLat,
       destinationLng: body.destinationLng,
       destinationRadiusKm: body.destinationRadiusKm,
+      alongEnabled: body.alongEnabled,
     });
   }
 
@@ -126,6 +111,16 @@ export class DriversService {
       activeRideId: null,
       poolId: current?.poolId ?? null,
       online: false,
+      // Keep Along / destination prefs when going offline.
+      alongEnabled: current?.alongEnabled ?? false,
+      destinationEnabled: current?.destinationEnabled ?? false,
+      destinationLabel: current?.destinationLabel ?? null,
+      destinationLat: current?.destinationLat ?? null,
+      destinationLng: current?.destinationLng ?? null,
+      destinationRadiusKm: current?.destinationRadiusKm ?? null,
+      maxDispatchRadiusKm: current?.maxDispatchRadiusKm ?? null,
+      expandRadiusWhenIdle: current?.expandRadiusWhenIdle ?? null,
+      effectiveRadiusKm: current?.effectiveRadiusKm ?? null,
     });
   }
 
@@ -167,6 +162,16 @@ export class DriversService {
       poolId:
         opts?.poolId !== undefined ? opts.poolId : (current?.poolId ?? null),
       online,
+      // Duty flips must not wipe Along / destination / range prefs.
+      alongEnabled: current?.alongEnabled ?? false,
+      destinationEnabled: current?.destinationEnabled ?? false,
+      destinationLabel: current?.destinationLabel ?? null,
+      destinationLat: current?.destinationLat ?? null,
+      destinationLng: current?.destinationLng ?? null,
+      destinationRadiusKm: current?.destinationRadiusKm ?? null,
+      maxDispatchRadiusKm: current?.maxDispatchRadiusKm ?? null,
+      expandRadiusWhenIdle: current?.expandRadiusWhenIdle ?? null,
+      effectiveRadiusKm: current?.effectiveRadiusKm ?? null,
     });
   }
 
@@ -179,7 +184,20 @@ export class DriversService {
         online: false,
         latitude: null,
         longitude: null,
+        heading: null,
+        activeRideId: null,
+        poolId: null,
+        city: null,
         lastSeenAt: null,
+        alongEnabled: false,
+        destinationEnabled: false,
+        destinationLabel: null,
+        destinationLat: null,
+        destinationLng: null,
+        destinationRadiusKm: 8,
+        maxDispatchRadiusKm: 10,
+        expandRadiusWhenIdle: false,
+        effectiveRadiusKm: 10,
       };
     }
     return presence;
@@ -282,6 +300,15 @@ export class DriversService {
           latitude: ride.dropoff.latitude,
           longitude: ride.dropoff.longitude,
         };
+        const rideAlong = Boolean(ride.along) || ride.classId === 'along';
+        if (
+          !Number.isFinite(livePoint.latitude) ||
+          !Number.isFinite(livePoint.longitude) ||
+          !Number.isFinite(pickup.latitude) ||
+          !Number.isFinite(pickup.longitude)
+        ) {
+          return null;
+        }
         const nearby = available
           .map((driver) => {
             const km = kmBetween(
@@ -296,6 +323,9 @@ export class DriversService {
             );
             const rounded = Math.round(km * 10) / 10;
             const inRange = rounded <= radius + 0.05;
+            const alongOn = Boolean(driver.alongEnabled);
+            // Shared Along requests only match drivers who opted into Along.
+            const alongOk = !rideAlong || alongOn;
             const destOn = Boolean(driver.destinationEnabled);
             const destReady =
               destOn &&
@@ -330,8 +360,9 @@ export class DriversService {
               effectiveRadiusKm: radius,
               destinationEnabled: destOn,
               destinationLabel: driver.destinationLabel ?? null,
+              alongEnabled: alongOn,
               alongRoute,
-              canSee: inRange && alongRoute,
+              canSee: inRange && alongRoute && alongOk,
               shortfallKm: Math.max(0, Math.ceil(rounded - radius)),
             };
           })
@@ -357,6 +388,7 @@ export class DriversService {
             latitude: drop.latitude,
             longitude: drop.longitude,
           },
+          along: rideAlong,
           classLabel: ride.classLabel,
           fare: ride.fare,
           createdAt: ride.createdAt,
@@ -368,6 +400,7 @@ export class DriversService {
           nearby,
         };
       })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
@@ -452,7 +485,9 @@ export class DriversService {
         ? 'verified'
         : ninRaw === 'rejected' || ninRaw === 'failed'
           ? 'failed'
-          : 'pending';
+          : ninRaw === 'missing' || ninRaw === 'empty'
+            ? 'missing'
+            : 'pending';
 
     const inspectionStatus = textField(
       inspection.status,

@@ -41,6 +41,12 @@ class DriverApplicationDto {
   @IsOptional() @IsBoolean() submit?: boolean;
 }
 
+class RidePrefsDto {
+  @IsOptional()
+  @IsBoolean()
+  alongEnabled?: boolean;
+}
+
 @Controller()
 export class UsersController {
   constructor(private readonly users: UsersService) {}
@@ -62,6 +68,20 @@ export class UsersController {
   @Put('users/me')
   updateMe(@Req() req: { user: JwtPayload }, @Body() body: ProfileDto) {
     return this.users.updateProfile(req.user.sub, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('customer')
+  @Get('users/me/ride-prefs')
+  ridePrefs(@Req() req: { user: JwtPayload }) {
+    return this.users.getRidePrefs(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('customer')
+  @Put('users/me/ride-prefs')
+  setRidePrefs(@Req() req: { user: JwtPayload }, @Body() body: RidePrefsDto) {
+    return this.users.setRidePrefs(req.user.sub, body);
   }
 
   @UseGuards(JwtAuthGuard)

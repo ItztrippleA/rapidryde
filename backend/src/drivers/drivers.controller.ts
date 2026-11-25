@@ -85,6 +85,10 @@ class PresenceDto {
   @Min(2)
   @Max(30)
   destinationRadiusKm?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  alongEnabled?: boolean;
 }
 
 class PreferencesDto {
@@ -130,6 +134,10 @@ class PreferencesDto {
   @Min(2)
   @Max(30)
   destinationRadiusKm?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  alongEnabled?: boolean;
 }
 
 class ExtendRangeDto {

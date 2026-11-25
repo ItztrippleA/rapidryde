@@ -8,7 +8,8 @@ export type TripChargeKind =
   | 'waiting'
   | 'traffic'
   | 'adjustment'
-  | 'compensation';
+  | 'compensation'
+  | 'cancellation';
 
 export type TripCharge = {
   id: string;

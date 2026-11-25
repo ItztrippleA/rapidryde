@@ -21,10 +21,23 @@ export class UsersService {
       user.role === 'driver'
         ? await this.store.getDriverApplication(userId)
         : null;
+    const ridePrefs =
+      user.role === 'customer'
+        ? await this.store.getCustomerRidePrefs(userId)
+        : null;
     return {
       user: this.auth.publicUser(user),
       application,
+      ridePrefs,
     };
+  }
+
+  async getRidePrefs(userId: string) {
+    return this.store.getCustomerRidePrefs(userId);
+  }
+
+  async setRidePrefs(userId: string, prefs: { alongEnabled?: boolean }) {
+    return this.store.setCustomerRidePrefs(userId, prefs);
   }
 
   async updateProfile(

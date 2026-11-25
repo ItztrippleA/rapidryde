@@ -486,7 +486,7 @@ export class RideGateway
   @SubscribeMessage('ride:cancel')
   async onRideCancel(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { id?: string },
+    @MessageBody() body: { id?: string; note?: string },
   ) {
     const user = this.requireUser(client);
     const rideId = String(body?.id || '').trim();
@@ -498,7 +498,13 @@ export class RideGateway
         ride.customerId === user.sub ||
         ride.driverId === user.sub;
       if (!allowed) return { ok: false, error: 'Forbidden' };
-      const next = await this.rides.stage(rideId, 'cancelled', user.role === 'driver' ? 'driver' : 'customer');
+      const by = user.role === 'driver' ? 'driver' : 'customer';
+      const next = await this.rides.stage(
+        rideId,
+        'cancelled',
+        by,
+        body?.note,
+      );
       this.bus.toRide(rideId, 'ride:cancelled', { id: rideId });
       this.bus.toUser(ride.customerId, 'ride:cancelled', { id: rideId });
       if (ride.driverId) {
