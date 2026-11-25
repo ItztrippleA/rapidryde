@@ -340,6 +340,7 @@ export class RidesService {
       latitude: number;
       longitude: number;
       km: number;
+      onWay: boolean;
       vehicleLabel: string;
       colour: string;
       plate: string;
@@ -353,6 +354,7 @@ export class RidesService {
     for (const driver of available) {
       if (await this.driverDeclined(driver.driverId, rideId)) continue;
       // Along shared rides only go to drivers who opted into Along.
+      // Along-on drivers still receive normal private Rydes.
       if (isAlong && !driver.alongEnabled) continue;
       const km = kmBetween(
         { latitude: driver.latitude!, longitude: driver.longitude! },
@@ -368,6 +370,7 @@ export class RidesService {
       if (km > radiusKm + 0.05) continue;
       if (km > driverRadius + 0.05) continue;
 
+      // Destination is a preference, not a hard gate — normal Rydes still match.
       const destOn = Boolean(driver.destinationEnabled);
       const destReady =
         destOn &&
@@ -375,22 +378,20 @@ export class RidesService {
         driver.destinationLng != null &&
         Number.isFinite(driver.destinationLat) &&
         Number.isFinite(driver.destinationLng);
-      if (destReady) {
-        // Corridor = driver (C) → destination (A); rider drop must be near A or on that path.
-        const along = alongDestination(
-          {
-            latitude: driver.latitude!,
-            longitude: driver.longitude!,
-          },
-          drop,
-          {
-            latitude: driver.destinationLat!,
-            longitude: driver.destinationLng!,
-          },
-          { nearKm: Number(driver.destinationRadiusKm ?? 8) },
-        );
-        if (!along) continue;
-      }
+      const onWay = destReady
+        ? alongDestination(
+            {
+              latitude: driver.latitude!,
+              longitude: driver.longitude!,
+            },
+            drop,
+            {
+              latitude: driver.destinationLat!,
+              longitude: driver.destinationLng!,
+            },
+            { nearKm: Number(driver.destinationRadiusKm ?? 8) },
+          )
+        : true;
 
       const app = await this.store.getDriverApplication(driver.driverId);
       const bits = vehicleBits(app?.vehicle);
@@ -404,6 +405,7 @@ export class RidesService {
         latitude: driver.latitude!,
         longitude: driver.longitude!,
         km: Math.round(km * 10) / 10,
+        onWay,
         vehicleLabel: bits.label,
         colour: bits.colour,
         plate: bits.plate,
@@ -411,7 +413,11 @@ export class RidesService {
       });
     }
 
-    matches.sort((a, b) => a.km - b.km);
+    // Prefer drivers whose destination aligns with the drop, then nearest.
+    matches.sort((a, b) => {
+      if (a.onWay !== b.onWay) return a.onWay ? -1 : 1;
+      return a.km - b.km;
+    });
     const top = matches.slice(0, 12);
 
     if (top.length === 0) {
@@ -510,9 +516,18 @@ export class RidesService {
       set.add(id);
     }
     const alongOn = Boolean(presence.alongEnabled);
+    type CatchUp = {
+      ride: (typeof rides)[number];
+      rideAlong: boolean;
+      km: number;
+      onWay: boolean;
+      pickupMin: number;
+    };
+    const catchUps: CatchUp[] = [];
     for (const ride of rides) {
       if (declinedIds.has(ride.id) || this.declinedByDriver.get(driverId)?.has(ride.id)) continue;
       const rideAlong = Boolean(ride.along) || ride.classId === 'along';
+      // Along-on still receives normal private Rydes; only Along rides need the opt-in.
       if (rideAlong && !alongOn) continue;
       const pickup = {
         latitude: ride.pickup.latitude,
@@ -529,30 +544,37 @@ export class RidesService {
         presence.destinationLng != null &&
         Number.isFinite(presence.destinationLat) &&
         Number.isFinite(presence.destinationLng);
-      if (destReady) {
-        const drop = {
-          latitude: ride.dropoff.latitude,
-          longitude: ride.dropoff.longitude,
-        };
-        if (
-          !alongDestination(here, drop, {
-            latitude: presence.destinationLat!,
-            longitude: presence.destinationLng!,
-          }, { nearKm: Number(presence.destinationRadiusKm ?? 8) })
-        ) {
-          continue;
-        }
-      }
+      const drop = {
+        latitude: ride.dropoff.latitude,
+        longitude: ride.dropoff.longitude,
+      };
+      const onWay = destReady
+        ? alongDestination(
+            here,
+            drop,
+            {
+              latitude: presence.destinationLat!,
+              longitude: presence.destinationLng!,
+            },
+            { nearKm: Number(presence.destinationRadiusKm ?? 8) },
+          )
+        : true;
 
-      const app = await this.store.getDriverApplication(driverId);
-      const bits = vehicleBits(app?.vehicle);
-      const photo = String(
-        (app?.profile as { photoUrl?: string } | undefined)?.photoUrl || '',
-      ).trim();
-      const pickupMin = Math.max(1, Math.round((km / 25) * 60));
-      const user = await this.store.findUserById(driverId);
-      const driverName = user?.name || bits.label || 'Driver';
+      catchUps.push({
+        ride,
+        rideAlong,
+        km,
+        onWay,
+        pickupMin: Math.max(1, Math.round((km / 25) * 60)),
+      });
+    }
+    catchUps.sort((a, b) => {
+      if (a.onWay !== b.onWay) return a.onWay ? -1 : 1;
+      return a.km - b.km;
+    });
 
+    for (const row of catchUps) {
+      const { ride, rideAlong, km, pickupMin } = row;
       this.bus.toDriver(driverId, 'ride:offer', {
         id: ride.id,
         passenger: ride.customer.name || 'Rider',
@@ -624,37 +646,39 @@ export class RidesService {
       set.add(id);
     }
     const alongOn = Boolean(presence.alongEnabled);
+    const destOn = Boolean(presence.destinationEnabled);
+    const destReady =
+      destOn &&
+      presence.destinationLat != null &&
+      presence.destinationLng != null &&
+      Number.isFinite(presence.destinationLat) &&
+      Number.isFinite(presence.destinationLng);
     return rides
       .map((ride) => {
         if (declinedIds.has(ride.id)) return null;
         const rideAlong = Boolean(ride.along) || ride.classId === 'along';
+        // Along-on still receives normal private Rydes.
         if (rideAlong && !alongOn) return null;
         const km = kmBetween(here, {
           latitude: ride.pickup.latitude,
           longitude: ride.pickup.longitude,
         });
         if (km > radiusKm + 0.05) return null;
-        const destOn = Boolean(presence.destinationEnabled);
-        const destReady =
-          destOn &&
-          presence.destinationLat != null &&
-          presence.destinationLng != null &&
-          Number.isFinite(presence.destinationLat) &&
-          Number.isFinite(presence.destinationLng);
-        if (destReady) {
-          const drop = {
-            latitude: ride.dropoff.latitude,
-            longitude: ride.dropoff.longitude,
-          };
-          if (
-            !alongDestination(here, drop, {
-              latitude: presence.destinationLat!,
-              longitude: presence.destinationLng!,
-            }, { nearKm: Number(presence.destinationRadiusKm ?? 8) })
-          ) {
-            return null;
-          }
-        }
+        const drop = {
+          latitude: ride.dropoff.latitude,
+          longitude: ride.dropoff.longitude,
+        };
+        const onWay = destReady
+          ? alongDestination(
+              here,
+              drop,
+              {
+                latitude: presence.destinationLat!,
+                longitude: presence.destinationLng!,
+              },
+              { nearKm: Number(presence.destinationRadiusKm ?? 8) },
+            )
+          : true;
         const pickupMin = Math.max(1, Math.round((km / 25) * 60));
         return {
           id: ride.id,
@@ -680,11 +704,16 @@ export class RidesService {
           classId: ride.classId || 'ryde',
           classLabel: ride.classLabel || 'Ryde',
           along: rideAlong,
+          onWay,
         };
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row))
-      .sort((a, b) => a.pickupKm - b.pickupKm)
-      .slice(0, 7);
+      .sort((a, b) => {
+        if (a.onWay !== b.onWay) return a.onWay ? -1 : 1;
+        return a.pickupKm - b.pickupKm;
+      })
+      .slice(0, 7)
+      .map(({ onWay: _onWay, ...offer }) => offer);
   }
 
   /** Open or join an Along / batch pool */

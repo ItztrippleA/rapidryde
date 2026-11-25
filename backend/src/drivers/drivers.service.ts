@@ -366,7 +366,8 @@ export class DriversService {
               destinationLabel: driver.destinationLabel ?? null,
               alongEnabled: alongOn,
               alongRoute,
-              canSee: inRange && alongRoute && alongOk,
+              // Destination prefers on-way trips but does not hide normal Rydes.
+              canSee: inRange && alongOk,
               shortfallKm: Math.max(0, Math.ceil(rounded - radius)),
             };
           })
