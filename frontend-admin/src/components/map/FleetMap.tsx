@@ -99,53 +99,69 @@ function markerFill(status: MapMarkerStatus | undefined, online: boolean, accent
   return accent;
 }
 
-/** Top-down car pointing north (−y). Rotation uses GPS heading. */
-function CarGlyph({
+/** Top-down car (nose = north). Rotates with GPS heading. */
+function DriverCar({
   fill,
-  stroke,
+  heading,
   selected,
+  online,
+  along,
   poolTaken = 0,
 }: {
   fill: string;
-  stroke: string;
+  heading: number;
   selected: boolean;
+  online: boolean;
+  along?: boolean;
   poolTaken?: number;
 }) {
-  const scale = selected ? 1.2 : 1;
+  const size = selected ? 44 : 36;
+  const body = online ? fill : "#8A8174";
   const seats = [
-    { x: -0.45, y: 0.95 },
-    { x: 0.45, y: 0.95 },
-    { x: 0, y: -0.55 },
+    { cx: 10.5, cy: 14 },
+    { cx: 17.5, cy: 14 },
+    { cx: 14, cy: 22 },
   ];
   return (
-    <g transform={`scale(${scale})`}>
-      <path
-        d="M -1.15 -2.35
-           C -1.05 -2.85, -0.55 -3.15, 0 -3.15
-           C 0.55 -3.15, 1.05 -2.85, 1.15 -2.35
-           L 1.35 -0.85
-           L 1.45 1.55
-           C 1.45 2.15, 0.95 2.55, 0.35 2.55
-           L -0.35 2.55
-           C -0.95 2.55, -1.45 2.15, -1.45 1.55
-           L -1.35 -0.85
-           Z"
-        fill={fill}
-        stroke={stroke}
-        strokeWidth="0.28"
-        strokeLinejoin="round"
-      />
-      <path d="M -0.75 -1.55 L 0.75 -1.55 L 0.85 -0.15 L -0.85 -0.15 Z" fill={stroke} opacity="0.35" />
-      <path d="M -0.7 0.55 L 0.7 0.55 L 0.55 1.55 L -0.55 1.55 Z" fill={stroke} opacity="0.28" />
-      <path d="M 0 -3.05 L 0.45 -2.15 L -0.45 -2.15 Z" fill={stroke} />
-      <rect x="-1.55" y="-1.85" width="0.45" height="0.85" rx="0.15" fill={stroke} />
-      <rect x="1.1" y="-1.85" width="0.45" height="0.85" rx="0.15" fill={stroke} />
-      <rect x="-1.55" y="0.85" width="0.45" height="0.85" rx="0.15" fill={stroke} />
-      <rect x="1.1" y="0.85" width="0.45" height="0.85" rx="0.15" fill={stroke} />
-      {seats.slice(0, Math.min(3, Math.max(0, poolTaken))).map((seat, index) => (
-        <circle key={index} cx={seat.x} cy={seat.y} r="0.38" fill="#60A5FA" stroke={stroke} strokeWidth="0.12" />
-      ))}
-    </g>
+    <Box
+      sx={{
+        width: size,
+        height: size * 1.25,
+        display: "grid",
+        placeItems: "center",
+        filter: selected
+          ? `drop-shadow(0 0 0 2px ${fill}) drop-shadow(0 2px 6px rgba(0,0,0,0.55))`
+          : "drop-shadow(0 2px 4px rgba(0,0,0,0.5))",
+        opacity: online ? 1 : 0.55,
+      }}
+    >
+      <svg
+        width={size}
+        height={size * 1.25}
+        viewBox="0 0 28 36"
+        style={{ transform: `rotate(${heading}deg)`, display: "block" }}
+      >
+        <ellipse cx="14" cy="21" rx="8" ry="11" fill="rgba(0,0,0,0.28)" />
+        <path
+          d="M8.4 12C8.4 6 10.8 2.5 14 2.5C17.2 2.5 19.6 6 19.6 12L20.2 25C20.2 32 17.6 34.2 14 34.2C10.4 34.2 7.8 32 7.8 25Z"
+          fill={body}
+          stroke="#14110E"
+          strokeWidth="1.1"
+          strokeLinejoin="round"
+        />
+        <path d="M10.2 11C10.5 7.6 17.5 7.6 17.8 11L17.3 14.6C14 13.4 10.7 13.4 10.7 14.6Z" fill="#E7F6FF" />
+        <path d="M10.6 24.5C11 27.4 17 27.4 17.4 24.5L16.8 22C14 23.2 11.2 23.2 11.2 22Z" fill="#1A140C" opacity={0.45} />
+        <rect x="2.4" y="10" width="3.2" height="6.4" rx="1.1" fill="#1A140C" />
+        <rect x="22.4" y="10" width="3.2" height="6.4" rx="1.1" fill="#1A140C" />
+        <rect x="2.4" y="21" width="3.2" height="6.4" rx="1.1" fill="#1A140C" />
+        <rect x="22.4" y="21" width="3.2" height="6.4" rx="1.1" fill="#1A140C" />
+        {along
+          ? seats.slice(0, Math.min(3, Math.max(0, poolTaken))).map((seat, index) => (
+              <circle key={index} cx={seat.cx} cy={seat.cy} r="2.1" fill="#60A5FA" stroke="#14110E" strokeWidth="0.6" />
+            ))
+          : null}
+      </svg>
+    </Box>
   );
 }
 
@@ -181,12 +197,11 @@ function DriverPin({
         flexDirection: "column",
         alignItems: "center",
         cursor: "pointer",
-        transform: "translateY(-6px)",
       }}
     >
       <Typography
         sx={{
-          mb: 0.4,
+          mb: 0.35,
           px: 0.75,
           py: 0.15,
           borderRadius: 1,
@@ -196,32 +211,20 @@ function DriverPin({
           fontWeight: 700,
           whiteSpace: "nowrap",
           boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+          pointerEvents: "none",
         }}
       >
         {name.split(" ")[0]}
         {along && taken > 0 ? ` · Along ${taken}/${total}` : ""}
       </Typography>
-      <Box
-        sx={{
-          width: selected ? 58 : 50,
-          height: selected ? 58 : 50,
-          borderRadius: "50%",
-          display: "grid",
-          placeItems: "center",
-          bgcolor: online ? `${fill}22` : "transparent",
-          boxShadow: online ? `0 0 0 2px ${fill}55` : "none",
-        }}
-      >
-        <svg
-          width={selected ? 46 : 40}
-          height={selected ? 46 : 40}
-          viewBox="-4 -4.5 8 9.5"
-          style={{ transform: `rotate(${heading}deg)`, display: "block", filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.55))" }}
-        >
-          <CarGlyph fill={fill} stroke="#14110E" selected={selected} poolTaken={taken} />
-          {online ? <line x1="0" y1="-3.4" x2="0" y2="-4.6" stroke={fill} strokeWidth="0.35" strokeLinecap="round" /> : null}
-        </svg>
-      </Box>
+      <DriverCar
+        fill={fill}
+        heading={heading}
+        selected={selected}
+        online={online}
+        along={along}
+        poolTaken={taken}
+      />
     </Box>
   );
 }
