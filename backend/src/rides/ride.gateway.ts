@@ -307,7 +307,7 @@ export class RideGateway
   @SubscribeMessage('ride:accept')
   async onRideAccept(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { id?: string; fare?: number },
+    @MessageBody() body: { id?: string; fare?: number; asBid?: boolean },
   ) {
     const user = this.requireRole(client, 'driver');
     const rideId = String(body?.id || '').trim();
@@ -315,6 +315,23 @@ export class RideGateway
     try {
       const presence = await this.drivers.me(user.sub);
       const fare = Number(body?.fare);
+      const ride = await this.rides.get(rideId);
+      const bidFare =
+        Number.isFinite(fare) && fare > 0 ? fare : ride.fare;
+      // inDrive-style: Accept while searching = submit a bid (unless desk forces assign).
+      const asBid = body?.asBid !== false;
+      if (asBid && ride.status === 'searching') {
+        await this.rides.publishDriverBid(rideId, user.sub, bidFare, {
+          quoted: ride.quoted,
+        });
+        await client.join(`ride:${rideId}`);
+        this.bus.toDriver(user.sub, 'ride:bid:pending', {
+          id: rideId,
+          fare: bidFare,
+        });
+        return { ok: true, pendingBid: true, fare: bidFare };
+      }
+
       const assigned = await this.rides.assign(rideId, user.sub, {
         fare: Number.isFinite(fare) && fare > 0 ? fare : undefined,
         latitude:
@@ -359,6 +376,67 @@ export class RideGateway
         this.bus.toDriver(row.driverId, 'ride:taken', { id: rideId });
       }
       return { ok: true, status: assigned.status };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed',
+      };
+    }
+  }
+
+  /** Rider accepts a driver bid — assigns and starts the trip for both sides. */
+  @SubscribeMessage('ride:bid:accept')
+  async onBidAccept(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { id?: string; driverId?: string; fare?: number },
+  ) {
+    const user = this.requireRole(client, 'customer');
+    const rideId = String(body?.id || '').trim();
+    const driverId = String(body?.driverId || '').trim();
+    if (!rideId || !driverId) return { ok: false, error: 'Missing ride or driver' };
+    try {
+      const fare = Number(body?.fare);
+      const assigned = await this.rides.chooseDriver(
+        rideId,
+        user.sub,
+        driverId,
+        Number.isFinite(fare) && fare > 0 ? fare : undefined,
+      );
+      await client.join(`ride:${rideId}`);
+      const presence = await this.drivers.me(driverId).catch(() => null);
+      const card = {
+        id: driverId,
+        name: assigned.driver?.name || 'Driver',
+        rating: assigned.driver?.rating ?? 4.9,
+        vehicle: assigned.driver?.vehicle || 'Car',
+        colour: assigned.driver?.colour || 'Car',
+        plate: assigned.driver?.plate || '',
+        fare: assigned.fare,
+        sample: false,
+        latitude: assigned.driverLocation?.latitude ?? presence?.latitude ?? 0,
+        longitude: assigned.driverLocation?.longitude ?? presence?.longitude ?? 0,
+        phone: assigned.driver?.phone || '',
+        photo: assigned.driver?.photo,
+        bid: true,
+        fareTalk: 'agreed' as const,
+      };
+      this.bus.toRide(rideId, 'ride:driver', card);
+      this.bus.toUser(assigned.customerId, 'ride:driver', card);
+      this.bus.toDriver(driverId, 'ride:bid:accepted', {
+        id: rideId,
+        fare: assigned.fare,
+      });
+      this.bus.toRide(rideId, 'ride:stage', { stage: 'assigned', id: rideId });
+      this.bus.toUser(assigned.customerId, 'ride:stage', {
+        stage: 'assigned',
+        id: rideId,
+      });
+      const live = await this.drivers.liveForAdmin(undefined, true);
+      for (const row of live) {
+        if (row.driverId === driverId) continue;
+        this.bus.toDriver(row.driverId, 'ride:taken', { id: rideId });
+      }
+      return { ok: true, status: assigned.status, fare: assigned.fare };
     } catch (error) {
       return {
         ok: false,

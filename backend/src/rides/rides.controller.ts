@@ -364,6 +364,23 @@ export class RidesController {
     });
   }
 
+  /** Customer accepts a driver bid — assigns that driver. */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('customer')
+  @Post(':id/choose')
+  choose(
+    @Req() req: { user: JwtPayload },
+    @Param('id') id: string,
+    @Body() body: AssignDto,
+  ) {
+    return this.rides.chooseDriver(
+      id,
+      req.user.sub,
+      body.driverId,
+      body.fare,
+    );
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin', 'driver', 'customer')
   @Post(':id/stage')

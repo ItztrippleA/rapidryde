@@ -1058,18 +1058,10 @@ export class RidesService {
       bid: true,
       fareTalk: raised ? ('waiting' as const) : ('agreed' as const),
     };
+    // One discrete bid card per driver — do not also push ride:fare or the
+    // customer board will look like a single fare climbing in realtime.
     this.bus.toRide(rideId, 'ride:bid', card);
     this.bus.toUser(ride.customerId, 'ride:bid', card);
-    this.bus.toRide(rideId, 'ride:fare', {
-      id: rideId,
-      fare: next.fare,
-      quoted: next.quoted,
-    });
-    this.bus.toUser(ride.customerId, 'ride:fare', {
-      id: rideId,
-      fare: next.fare,
-      quoted: next.quoted,
-    });
     return { ok: true as const, fare: next.fare, quoted: next.quoted };
   }
 
