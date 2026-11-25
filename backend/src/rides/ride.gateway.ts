@@ -499,17 +499,13 @@ export class RideGateway
         ride.driverId === user.sub;
       if (!allowed) return { ok: false, error: 'Forbidden' };
       const by = user.role === 'driver' ? 'driver' : 'customer';
+      // rides.stage already fans out ride:stage + ride:cancelled to ride/user/driver.
       const next = await this.rides.stage(
         rideId,
         'cancelled',
         by,
         body?.note,
       );
-      this.bus.toRide(rideId, 'ride:cancelled', { id: rideId });
-      this.bus.toUser(ride.customerId, 'ride:cancelled', { id: rideId });
-      if (ride.driverId) {
-        this.bus.toDriver(ride.driverId, 'ride:cancelled', { id: rideId });
-      }
       return { ok: true, status: next.status };
     } catch (error) {
       return {

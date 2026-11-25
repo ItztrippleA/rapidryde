@@ -216,6 +216,8 @@ export class DriversService {
     longitude: number;
     radiusKm?: number;
     city?: string;
+    /** When true, only drivers who opted into Along. */
+    alongOnly?: boolean;
   }) {
     const radiusKm = Math.max(1, Math.min(40, Number(opts.radiusKm) || 6));
     const hub = { latitude: opts.latitude, longitude: opts.longitude };
@@ -233,7 +235,8 @@ export class DriversService {
           driver.latitude != null &&
           driver.longitude != null &&
           Number.isFinite(driver.latitude) &&
-          Number.isFinite(driver.longitude),
+          Number.isFinite(driver.longitude) &&
+          (!opts.alongOnly || Boolean(driver.alongEnabled)),
       )
       .map((driver) => {
         const km = kmBetween(
@@ -247,6 +250,7 @@ export class DriversService {
           heading: driver.heading ?? 0,
           km: Math.round(km * 10) / 10,
           name: driver.name || 'Driver',
+          alongEnabled: Boolean(driver.alongEnabled),
         };
       })
       .filter((driver) => driver.km <= radiusKm + 0.05)

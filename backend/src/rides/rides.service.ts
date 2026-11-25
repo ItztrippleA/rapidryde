@@ -872,12 +872,15 @@ export class RidesService {
     next.updatedAt = now;
     await this.store.upsertRide(next);
     this.bus.toRide(id, 'ride:stage', { stage: status, id });
+    // Always mirror stage to the rider's user room — they may not be in ride:{id}
+    // (matching → trip handoff, backgrounded, or reconnect before ride:join).
+    this.bus.toUser(next.customerId, 'ride:stage', { stage: status, id });
     // Drivers listen on ride:cancelled (HTTP stage alone was only ride:stage).
     if (status === 'cancelled') {
-      this.bus.toRide(id, 'ride:cancelled', { id });
-      this.bus.toUser(next.customerId, 'ride:cancelled', { id });
+      this.bus.toRide(id, 'ride:cancelled', { id, by });
+      this.bus.toUser(next.customerId, 'ride:cancelled', { id, by });
       if (next.driverId) {
-        this.bus.toDriver(next.driverId, 'ride:cancelled', { id });
+        this.bus.toDriver(next.driverId, 'ride:cancelled', { id, by });
       }
       // Customer cancel after a driver was assigned → fee on their next trip (silent).
       if (by === 'customer') {
@@ -992,7 +995,11 @@ export class RidesService {
             : status === 'completed'
               ? 'This trip was marked complete.'
               : status === 'cancelled'
-                ? 'This trip was cancelled by the desk.'
+                ? by === 'driver'
+                  ? 'Your driver cancelled this trip.'
+                  : by === 'customer'
+                    ? 'You cancelled this trip.'
+                    : 'This trip was cancelled.'
                 : status,
       data: { rideId: id, stage: status },
     });

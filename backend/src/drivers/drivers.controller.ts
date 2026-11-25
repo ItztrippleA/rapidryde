@@ -220,6 +220,7 @@ export class DriversController {
     @Query('lng') lng?: string,
     @Query('radiusKm') radiusKm?: string,
     @Query('city') city?: string,
+    @Query('alongOnly') alongOnly?: string,
   ) {
     const latitude = Number(lat);
     const longitude = Number(lng);
@@ -231,6 +232,7 @@ export class DriversController {
       longitude,
       radiusKm: radiusKm != null ? Number(radiusKm) : undefined,
       city,
+      alongOnly: alongOnly === 'true' || alongOnly === '1',
     });
   }
 
