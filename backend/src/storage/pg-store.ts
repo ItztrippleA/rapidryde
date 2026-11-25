@@ -1094,6 +1094,10 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     return this.getPresence(row.driverId);
   }
 
+  /**
+   * Location-only write. Never touches status / online / activeRideId / poolId,
+   * so a ping cannot restore a finished trip or undo Go Online.
+   */
   async pingPresence(
     driverId: string,
     point: {
@@ -1103,24 +1107,216 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
       city?: string;
     },
   ) {
+    const now = Date.now();
+    const city = point.city?.trim().toLowerCase() || null;
+    await this.pool.query(
+      `INSERT INTO driver_presence (
+         driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at,
+         max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km,
+         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km
+       ) VALUES ($1,'offline',$2,$3,$4,$5,NULL,NULL,FALSE,$6,10,FALSE,10,FALSE,NULL,NULL,NULL,8)
+       ON CONFLICT (driver_id) DO UPDATE SET
+         city = COALESCE(EXCLUDED.city, driver_presence.city),
+         latitude = EXCLUDED.latitude,
+         longitude = EXCLUDED.longitude,
+         heading = COALESCE(EXCLUDED.heading, driver_presence.heading),
+         last_seen_at = EXCLUDED.last_seen_at`,
+      [
+        driverId,
+        city,
+        point.latitude,
+        point.longitude,
+        point.heading ?? null,
+        now,
+      ],
+    );
+    return this.getPresence(driverId);
+  }
+
+  /**
+   * Go Online / reconnect: set online=true and refresh coords/prefs without
+   * yanking an in-progress trip back to "available".
+   */
+  async assertPresenceOnline(row: {
+    driverId: string;
+    city?: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    heading?: number | null;
+    maxDispatchRadiusKm?: number | null;
+    expandRadiusWhenIdle?: boolean | null;
+    effectiveRadiusKm?: number | null;
+    destinationEnabled?: boolean | null;
+    destinationLabel?: string | null;
+    destinationLat?: number | null;
+    destinationLng?: number | null;
+    destinationRadiusKm?: number | null;
+  }) {
+    const current = await this.getPresence(row.driverId);
+    const maxKm =
+      row.maxDispatchRadiusKm ?? current?.maxDispatchRadiusKm ?? 10;
+    const expand =
+      row.expandRadiusWhenIdle ?? current?.expandRadiusWhenIdle ?? false;
+    const effective =
+      row.effectiveRadiusKm ?? current?.effectiveRadiusKm ?? maxKm;
+    const destinationEnabled =
+      row.destinationEnabled ?? current?.destinationEnabled ?? false;
+    const destinationLabel = destinationEnabled
+      ? row.destinationLabel !== undefined
+        ? row.destinationLabel
+        : (current?.destinationLabel ?? null)
+      : null;
+    const destinationLat = destinationEnabled
+      ? row.destinationLat !== undefined
+        ? row.destinationLat
+        : (current?.destinationLat ?? null)
+      : null;
+    const destinationLng = destinationEnabled
+      ? row.destinationLng !== undefined
+        ? row.destinationLng
+        : (current?.destinationLng ?? null)
+      : null;
+    const destinationRadiusKm =
+      row.destinationRadiusKm ?? current?.destinationRadiusKm ?? 8;
+    const now = Date.now();
+    const city = (row.city || current?.city || 'abuja').toLowerCase();
+    await this.pool.query(
+      `INSERT INTO driver_presence (
+         driver_id, status, city, latitude, longitude, heading, active_ride_id, pool_id, online, last_seen_at,
+         max_dispatch_radius_km, expand_radius_when_idle, effective_radius_km,
+         destination_enabled, destination_label, destination_lat, destination_lng, destination_radius_km
+       ) VALUES ($1,'available',$2,$3,$4,$5,NULL,NULL,TRUE,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (driver_id) DO UPDATE SET
+         status = CASE
+           WHEN driver_presence.status IN ('on_trip', 'busy') THEN driver_presence.status
+           ELSE 'available'
+         END,
+         city = COALESCE(EXCLUDED.city, driver_presence.city),
+         latitude = COALESCE(EXCLUDED.latitude, driver_presence.latitude),
+         longitude = COALESCE(EXCLUDED.longitude, driver_presence.longitude),
+         heading = COALESCE(EXCLUDED.heading, driver_presence.heading),
+         active_ride_id = CASE
+           WHEN driver_presence.status IN ('on_trip', 'busy') THEN driver_presence.active_ride_id
+           ELSE NULL
+         END,
+         pool_id = CASE
+           WHEN driver_presence.status IN ('on_trip', 'busy') THEN driver_presence.pool_id
+           ELSE NULL
+         END,
+         online = TRUE,
+         last_seen_at = EXCLUDED.last_seen_at,
+         max_dispatch_radius_km = EXCLUDED.max_dispatch_radius_km,
+         expand_radius_when_idle = EXCLUDED.expand_radius_when_idle,
+         effective_radius_km = EXCLUDED.effective_radius_km,
+         destination_enabled = EXCLUDED.destination_enabled,
+         destination_label = EXCLUDED.destination_label,
+         destination_lat = EXCLUDED.destination_lat,
+         destination_lng = EXCLUDED.destination_lng,
+         destination_radius_km = EXCLUDED.destination_radius_km`,
+      [
+        row.driverId,
+        city,
+        row.latitude ?? null,
+        row.longitude ?? null,
+        row.heading ?? null,
+        now,
+        maxKm,
+        expand,
+        effective,
+        destinationEnabled,
+        destinationLabel,
+        destinationLat,
+        destinationLng,
+        destinationRadiusKm,
+      ],
+    );
+    return this.getPresence(row.driverId);
+  }
+
+  /** Preference-only write — does not rewrite duty / online / ride linkage. */
+  async patchPresencePreferences(
+    driverId: string,
+    body: {
+      maxDispatchRadiusKm?: number | null;
+      expandRadiusWhenIdle?: boolean | null;
+      effectiveRadiusKm?: number | null;
+      destinationEnabled?: boolean | null;
+      destinationLabel?: string | null;
+      destinationLat?: number | null;
+      destinationLng?: number | null;
+      destinationRadiusKm?: number | null;
+    },
+  ) {
     const current = await this.getPresence(driverId);
-    const status =
-      current?.status === 'on_trip' || current?.status === 'busy'
-        ? current.status
-        : current?.online
-          ? 'available'
-          : 'offline';
-    return this.upsertPresence({
-      driverId,
-      status: status || 'offline',
-      city: point.city || current?.city || undefined,
-      latitude: point.latitude,
-      longitude: point.longitude,
-      heading: point.heading,
-      activeRideId: current?.activeRideId,
-      poolId: current?.poolId,
-      online: current?.online ?? false,
-    });
+    if (!current) {
+      return this.upsertPresence({
+        driverId,
+        status: 'offline',
+        online: false,
+        latitude: null,
+        longitude: null,
+        heading: null,
+        activeRideId: null,
+        poolId: null,
+        maxDispatchRadiusKm: body.maxDispatchRadiusKm,
+        expandRadiusWhenIdle: body.expandRadiusWhenIdle,
+        effectiveRadiusKm: body.effectiveRadiusKm,
+        destinationEnabled: body.destinationEnabled,
+        destinationLabel: body.destinationLabel,
+        destinationLat: body.destinationLat,
+        destinationLng: body.destinationLng,
+        destinationRadiusKm: body.destinationRadiusKm,
+      });
+    }
+    const maxKm =
+      body.maxDispatchRadiusKm ?? current.maxDispatchRadiusKm ?? 10;
+    const expand =
+      body.expandRadiusWhenIdle ?? current.expandRadiusWhenIdle ?? false;
+    const effective =
+      body.effectiveRadiusKm ?? current.effectiveRadiusKm ?? maxKm;
+    const destinationEnabled =
+      body.destinationEnabled ?? current.destinationEnabled ?? false;
+    const destinationLabel = destinationEnabled
+      ? body.destinationLabel !== undefined
+        ? body.destinationLabel
+        : (current.destinationLabel ?? null)
+      : null;
+    const destinationLat = destinationEnabled
+      ? body.destinationLat !== undefined
+        ? body.destinationLat
+        : (current.destinationLat ?? null)
+      : null;
+    const destinationLng = destinationEnabled
+      ? body.destinationLng !== undefined
+        ? body.destinationLng
+        : (current.destinationLng ?? null)
+      : null;
+    const destinationRadiusKm =
+      body.destinationRadiusKm ?? current.destinationRadiusKm ?? 8;
+    await this.pool.query(
+      `UPDATE driver_presence SET
+         max_dispatch_radius_km = $2,
+         expand_radius_when_idle = $3,
+         effective_radius_km = $4,
+         destination_enabled = $5,
+         destination_label = $6,
+         destination_lat = $7,
+         destination_lng = $8,
+         destination_radius_km = $9
+       WHERE driver_id = $1`,
+      [
+        driverId,
+        maxKm,
+        expand,
+        effective,
+        destinationEnabled,
+        destinationLabel,
+        destinationLat,
+        destinationLng,
+        destinationRadiusKm,
+      ],
+    );
+    return this.getPresence(driverId);
   }
 
   async getPresence(driverId: string) {
@@ -1161,8 +1357,8 @@ export class PgStore implements OnModuleInit, OnModuleDestroy {
     const clauses: string[] = [];
     const params: unknown[] = [];
     if (opts?.city) {
-      params.push(opts.city);
-      clauses.push(`p.city = $${params.length}`);
+      params.push(opts.city.toLowerCase());
+      clauses.push(`LOWER(COALESCE(p.city, '')) = $${params.length}`);
     }
     if (opts?.onlineOnly !== false) {
       clauses.push(`p.online = TRUE`);

@@ -17,11 +17,23 @@ type DestinationPrefs = {
   destinationRadiusKm?: number | null;
 };
 
+/** Coerce unknown JSON fields to a string without Object stringification. */
+function textField(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'number' && Number.isFinite(value))
+      return String(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+  }
+  const last = values[values.length - 1];
+  return typeof last === 'string' ? last : '';
+}
+
 @Injectable()
 export class DriversService {
   constructor(private readonly store: PgStore) {}
 
-  goOnline(
+  async goOnline(
     driverId: string,
     body: {
       city?: string;
@@ -33,19 +45,37 @@ export class DriversService {
       effectiveRadiusKm?: number;
     } & DestinationPrefs,
   ) {
+    const current = await this.store.getPresence(driverId);
+    const latitude =
+      body.latitude != null && Number.isFinite(body.latitude)
+        ? body.latitude
+        : (current?.latitude ?? null);
+    const longitude =
+      body.longitude != null && Number.isFinite(body.longitude)
+        ? body.longitude
+        : (current?.longitude ?? null);
+    // Duty re-asserts (timer / socket reconnect) must not yank a driver off an
+    // active ride back onto the nearby board as "available".
+    const onTrip =
+      current != null &&
+      (current.status === 'on_trip' || current.status === 'busy');
     return this.store.upsertPresence({
       driverId,
-      status: 'available',
-      city: body.city || 'abuja',
-      latitude: body.latitude ?? null,
-      longitude: body.longitude ?? null,
-      heading: body.heading ?? null,
-      activeRideId: null,
-      poolId: null,
+      status: onTrip ? current.status : 'available',
+      city: (body.city || current?.city || 'abuja').toLowerCase(),
+      latitude,
+      longitude,
+      heading:
+        body.heading != null && Number.isFinite(body.heading)
+          ? body.heading
+          : (current?.heading ?? null),
+      activeRideId: onTrip ? (current.activeRideId ?? null) : null,
+      poolId: onTrip ? (current.poolId ?? null) : null,
       online: true,
       maxDispatchRadiusKm: body.maxDispatchRadiusKm,
       expandRadiusWhenIdle: body.expandRadiusWhenIdle,
-      effectiveRadiusKm: body.effectiveRadiusKm ?? body.maxDispatchRadiusKm,
+      // Leave effective alone unless the client sent it — store merges undefined.
+      effectiveRadiusKm: body.effectiveRadiusKm,
       destinationEnabled: body.destinationEnabled,
       destinationLabel: body.destinationLabel,
       destinationLat: body.destinationLat,
@@ -75,7 +105,7 @@ export class DriversService {
       online: current?.online ?? false,
       maxDispatchRadiusKm: body.maxDispatchRadiusKm,
       expandRadiusWhenIdle: body.expandRadiusWhenIdle,
-      effectiveRadiusKm: body.effectiveRadiusKm ?? body.maxDispatchRadiusKm,
+      effectiveRadiusKm: body.effectiveRadiusKm,
       destinationEnabled: body.destinationEnabled,
       destinationLabel: body.destinationLabel,
       destinationLat: body.destinationLat,
@@ -108,20 +138,8 @@ export class DriversService {
       city?: string;
     },
   ) {
-    const current = await this.store.getPresence(driverId);
-    if (!current?.online) {
-      return this.store.upsertPresence({
-        driverId,
-        status: 'offline',
-        city: body.city,
-        latitude: body.latitude,
-        longitude: body.longitude,
-        heading: body.heading ?? null,
-        activeRideId: null,
-        poolId: null,
-        online: false,
-      });
-    }
+    // Always persist coords via pingPresence, which re-reads online/status at
+    // write time so a concurrent Go Online cannot be clobbered to offline.
     return this.store.pingPresence(driverId, body);
   }
 
@@ -132,6 +150,7 @@ export class DriversService {
   ) {
     const current = await this.store.getPresence(driverId);
     const online = status !== 'offline';
+    const keepRide = status === 'on_trip' || status === 'busy';
     return this.store.upsertPresence({
       driverId,
       status,
@@ -140,8 +159,13 @@ export class DriversService {
       longitude: current?.longitude ?? null,
       heading: current?.heading ?? null,
       activeRideId:
-        opts?.rideId ?? (status === 'on_trip' ? current?.activeRideId : null),
-      poolId: opts?.poolId ?? current?.poolId ?? null,
+        opts?.rideId !== undefined
+          ? opts.rideId
+          : keepRide
+            ? (current?.activeRideId ?? null)
+            : null,
+      poolId:
+        opts?.poolId !== undefined ? opts.poolId : (current?.poolId ?? null),
       online,
     });
   }
@@ -165,6 +189,9 @@ export class DriversService {
     return this.store.listLiveDrivers({ city, onlineOnly });
   }
 
+  /** Drop crashed apps that left online=true without fresh pings. */
+  private static readonly PRESENCE_FRESH_MS = 90_000;
+
   /** Customer map: available online drivers near a pickup / current location. */
   async nearbyForCustomer(opts: {
     latitude: number;
@@ -174,17 +201,17 @@ export class DriversService {
   }) {
     const radiusKm = Math.max(1, Math.min(40, Number(opts.radiusKm) || 6));
     const hub = { latitude: opts.latitude, longitude: opts.longitude };
-    let live = await this.store.listLiveDrivers({
-      city: opts.city || undefined,
+    const city = opts.city?.trim().toLowerCase() || undefined;
+    const live = await this.store.listLiveDrivers({
+      city,
       onlineOnly: true,
     });
-    if (live.length === 0 && opts.city) {
-      live = await this.store.listLiveDrivers({ onlineOnly: true });
-    }
+    const freshAfter = Date.now() - DriversService.PRESENCE_FRESH_MS;
     return live
       .filter(
         (driver) =>
           driver.status === 'available' &&
+          driver.lastSeenAt >= freshAfter &&
           driver.latitude != null &&
           driver.longitude != null &&
           Number.isFinite(driver.latitude) &&
@@ -221,9 +248,11 @@ export class DriversService {
         )
       : rides;
     const live = await this.store.listLiveDrivers({ city, onlineOnly: true });
+    const freshAfter = Date.now() - DriversService.PRESENCE_FRESH_MS;
     const available = live.filter(
       (driver) =>
         driver.status === 'available' &&
+        driver.lastSeenAt >= freshAfter &&
         driver.latitude != null &&
         driver.longitude != null &&
         Number.isFinite(driver.latitude) &&
@@ -398,27 +427,25 @@ export class DriversService {
     user: Awaited<ReturnType<PgStore['findUserById']>>,
   ) {
     if (!user) return null;
-    const profile = (application.profile || {}) as Record<string, unknown>;
-    const identity = (application.identity || {}) as Record<string, unknown>;
-    const licence = (application.licence || {}) as Record<string, unknown>;
-    const vehicle = (application.vehicle || {}) as Record<string, unknown>;
-    const inspection = (application.inspection || {}) as Record<
-      string,
-      unknown
-    >;
-    const bank = (application.bank || {}) as Record<string, unknown>;
-    const emergency = (application.emergency || {}) as Record<string, unknown>;
+    // Already Record<string, unknown> on DriverApplication — no cast needed.
+    const profile = application.profile || {};
+    const identity = application.identity || {};
+    const licence = application.licence || {};
+    const vehicle = application.vehicle || {};
+    const inspection = application.inspection || {};
+    const bank = application.bank || {};
+    const emergency = application.emergency || {};
     const userIdentity = user.identity || {};
     const name =
       user.name ||
       [user.firstName, user.middleName, user.lastName]
         .filter(Boolean)
         .join(' ') ||
-      String(profile.firstName || profile.name || 'Driver');
+      textField(profile.firstName, profile.name, 'Driver');
 
     const ninRaw =
       userIdentity.status ||
-      identity.status ||
+      textField(identity.status) ||
       (userIdentity.maskedNin || identity.maskedNin ? 'pending' : 'missing');
     const ninStatus =
       ninRaw === 'approved' || ninRaw === 'verified'
@@ -427,8 +454,10 @@ export class DriversService {
           ? 'failed'
           : 'pending';
 
-    const inspectionStatus = String(
-      inspection.status || inspection.result || 'not_scheduled',
+    const inspectionStatus = textField(
+      inspection.status,
+      inspection.result,
+      'not_scheduled',
     );
     const papers =
       inspectionStatus === 'approved'
@@ -442,8 +471,8 @@ export class DriversService {
       code: user.publicCode || null,
       name,
       phone: user.phone,
-      email: user.email || String(profile.email || ''),
-      city: String(user.city || profile.city || 'abuja').toLowerCase(),
+      email: user.email || textField(profile.email),
+      city: textField(user.city, profile.city, 'abuja').toLowerCase(),
       accountStatus: user.status,
       applicationStatus: application.status,
       ninStatus,
@@ -451,62 +480,74 @@ export class DriversService {
       submittedAt: application.submittedAt,
       updatedAt: application.updatedAt,
       profile: {
-        firstName: user.firstName || String(profile.firstName || ''),
-        middleName: user.middleName || String(profile.middleName || ''),
-        lastName: user.lastName || String(profile.lastName || ''),
-        dob: user.dob || String(profile.dob || ''),
-        gender: user.gender || String(profile.gender || ''),
-        address: user.address || String(profile.address || ''),
-        state: user.state || String(profile.state || ''),
-        lga: user.lga || String(profile.lga || ''),
-        photoUrl: user.photoUrl || String(profile.photoUri || profile.photoUrl || ''),
+        firstName: user.firstName || textField(profile.firstName),
+        middleName: user.middleName || textField(profile.middleName),
+        lastName: user.lastName || textField(profile.lastName),
+        dob: user.dob || textField(profile.dob),
+        gender: user.gender || textField(profile.gender),
+        address: user.address || textField(profile.address),
+        state: user.state || textField(profile.state),
+        lga: user.lga || textField(profile.lga),
+        photoUrl:
+          user.photoUrl || textField(profile.photoUri, profile.photoUrl),
       },
       identity: {
-        maskedNin: userIdentity.maskedNin || identity.maskedNin || null,
-        status: userIdentity.status || identity.status || 'missing',
-        matchConfidence: userIdentity.matchConfidence ?? identity.matchConfidence ?? null,
-        failureReason: userIdentity.failureReason || identity.failureReason || null,
-        provider: userIdentity.provider || identity.provider || null,
-        slipAttached: Boolean(userIdentity.slipAttached || identity.slipAttached),
+        maskedNin:
+          userIdentity.maskedNin || textField(identity.maskedNin) || null,
+        status: userIdentity.status || textField(identity.status, 'missing'),
+        matchConfidence:
+          userIdentity.matchConfidence ??
+          (typeof identity.matchConfidence === 'number'
+            ? identity.matchConfidence
+            : null),
+        failureReason:
+          userIdentity.failureReason ||
+          textField(identity.failureReason) ||
+          null,
+        provider: userIdentity.provider || textField(identity.provider) || null,
+        slipAttached: Boolean(
+          userIdentity.slipAttached || identity.slipAttached,
+        ),
         consented: Boolean(userIdentity.consented || identity.consented),
         verifiedAt: userIdentity.verifiedAt || identity.verifiedAt || null,
       },
       licence: {
-        number: String(licence.number || licence.licenceNumber || ''),
-        expiry: String(licence.expiry || licence.licenceExpiry || ''),
-        status: String(licence.status || 'missing'),
-        failureReason: String(licence.failureReason || ''),
-        frontUri: String(licence.frontUri || ''),
-        backUri: String(licence.backUri || ''),
+        number: textField(licence.number, licence.licenceNumber),
+        expiry: textField(licence.expiry, licence.licenceExpiry),
+        status: textField(licence.status, 'missing'),
+        failureReason: textField(licence.failureReason),
+        frontUri: textField(licence.frontUri),
+        backUri: textField(licence.backUri),
       },
       vehicle: {
-        make: String(vehicle.make || ''),
-        model: String(vehicle.model || vehicle.vehicle || ''),
-        plate: String(vehicle.plate || ''),
-        colour: String(vehicle.colour || vehicle.color || ''),
-        year: String(vehicle.year || ''),
-        category: String(vehicle.category || ''),
-        fuelType: String(vehicle.fuelType || ''),
-        classId: String(vehicle.classId || vehicle.class || 'ryde'),
-        insuranceExpiry: String(vehicle.insuranceExpiry || ''),
-        status: String(vehicle.status || 'missing'),
+        make: textField(vehicle.make),
+        model: textField(vehicle.model, vehicle.vehicle),
+        plate: textField(vehicle.plate),
+        colour: textField(vehicle.colour, vehicle.color),
+        year: textField(vehicle.year),
+        category: textField(vehicle.category),
+        fuelType: textField(vehicle.fuelType),
+        classId: textField(vehicle.classId, vehicle.class, 'ryde'),
+        insuranceExpiry: textField(vehicle.insuranceExpiry),
+        status: textField(vehicle.status, 'missing'),
       },
       inspection: {
         status: inspectionStatus,
         scheduledAt: inspection.scheduledAt ?? null,
-        note: String(inspection.note || ''),
+        note: textField(inspection.note),
       },
       bank: {
-        bankName: String(bank.bankName || bank.name || ''),
-        maskedAccount: String(bank.maskedAccount || bank.accountLast4 || ''),
-        status: String(bank.status || 'missing'),
+        bankName: textField(bank.bankName, bank.name),
+        maskedAccount: textField(bank.maskedAccount, bank.accountLast4),
+        status: textField(bank.status, 'missing'),
       },
       emergency: {
-        name: String(emergency.name || emergency.emergencyName || ''),
-        relationship: String(
-          emergency.relationship || emergency.emergencyRelationship || '',
+        name: textField(emergency.name, emergency.emergencyName),
+        relationship: textField(
+          emergency.relationship,
+          emergency.emergencyRelationship,
         ),
-        phone: String(emergency.phone || emergency.emergencyPhone || ''),
+        phone: textField(emergency.phone, emergency.emergencyPhone),
       },
       raw: application,
     };
