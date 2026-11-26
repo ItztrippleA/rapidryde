@@ -18,7 +18,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DriverPeek, type PeekDriver, type PeekRide } from "@/components/map/DriverPeek";
-import { FleetMap } from "@/components/map/FleetMap";
+import { FleetMap, type MapTripRoute } from "@/components/map/FleetMap";
 import { PageHeader, Pill } from "@/components/ui/Chrome";
 import { adminLogin, api, hasApi } from "@/lib/api";
 import { inside, ring, toGrid } from "@/lib/geo";
@@ -80,6 +80,7 @@ type LookingRide = {
 type ApiRide = {
   id: string;
   status: string;
+  city?: string;
   classId?: string;
   classLabel?: string;
   payment?: string;
@@ -91,10 +92,51 @@ type ApiRide = {
   note?: string;
   startedAt?: number | null;
   assignedAt?: number | null;
-  pickup?: { label?: string } | string;
-  dropoff?: { label?: string } | string;
+  pickup?: { label?: string; latitude?: number; longitude?: number } | string;
+  dropoff?: { label?: string; latitude?: number; longitude?: number } | string;
+  stops?: Array<{ label?: string; latitude?: number; longitude?: number }>;
+  driverId?: string | null;
+  driverLocation?: { latitude: number; longitude: number; at?: number } | null;
+  customerLocation?: { latitude: number; longitude: number; at?: number } | null;
   customer?: { name?: string; phone?: string };
 };
+
+const OPEN_TRIP = new Set(["assigned", "to_pickup", "arrived", "on_trip"]);
+
+function rideLocKey(loc?: { latitude?: number; longitude?: number } | null) {
+  if (!loc || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) return "";
+  return `${Number(loc.latitude).toFixed(5)},${Number(loc.longitude).toFixed(5)}`;
+}
+
+/** Skip state churn when the open-trip set is unchanged (stops route remount flicker). */
+function sameOpenTrips(a: ApiRide[], b: ApiRide[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (left.id !== right.id) return false;
+    if (String(left.status) !== String(right.status)) return false;
+    if (left.driverId !== right.driverId) return false;
+    if (rideLocKey(left.customerLocation) !== rideLocKey(right.customerLocation)) return false;
+    if (rideLocKey(left.pickup as { latitude?: number; longitude?: number } | null) !== rideLocKey(right.pickup as { latitude?: number; longitude?: number } | null))
+      return false;
+    if (rideLocKey(left.dropoff as { latitude?: number; longitude?: number } | null) !== rideLocKey(right.dropoff as { latitude?: number; longitude?: number } | null))
+      return false;
+  }
+  return true;
+}
+
+function stopCoords(value: ApiRide["pickup"]): { lat: number; lng: number; label: string } | null {
+  if (!value || typeof value === "string") return null;
+  if (!Number.isFinite(value.latitude) || !Number.isFinite(value.longitude)) return null;
+  if (value.latitude === 0 && value.longitude === 0) return null;
+  return {
+    lat: Number(value.latitude),
+    lng: Number(value.longitude),
+    label: value.label || "",
+  };
+}
 
 /** Stable demo heading from an id when GPS heading is missing. */
 function seedHeading(id: string) {
@@ -158,6 +200,7 @@ export function MapView() {
   const [peekOpen, setPeekOpen] = useState(false);
   const [live, setLive] = useState<LiveDriver[]>([]);
   const [looking, setLooking] = useState<LookingRide[]>([]);
+  const [activeRides, setActiveRides] = useState<ApiRide[]>([]);
   const [source, setSource] = useState<"api" | "offline">("offline");
   const [error, setError] = useState("");
   const [actionNote, setActionNote] = useState("");
@@ -174,25 +217,32 @@ export function MapView() {
       setSource("offline");
       setLive([]);
       setLooking([]);
+      setActiveRides([]);
       return;
     }
     try {
       setError("");
       const { token } = await adminLogin();
-      const [rows, demand] = await Promise.all([
+      const [rows, demand, rides] = await Promise.all([
         api<LiveDriver[]>(
           `/admin/drivers/live?city=${city}&onlineOnly=${onlineOnly ? "true" : "false"}`,
           { token },
         ),
         api<LookingRide[]>(`/admin/rides/looking?city=${city}`, { token }).catch(() => [] as LookingRide[]),
+        api<ApiRide[]>(`/rides?limit=80`, { token }).catch(() => [] as ApiRide[]),
       ]);
       setLive(rows);
       setLooking(demand);
+      const open = Array.isArray(rides)
+        ? rides.filter((item) => OPEN_TRIP.has(String(item.status || "").toLowerCase()))
+        : [];
+      setActiveRides((prev) => (sameOpenTrips(prev, open) ? prev : open));
       setSource("api");
     } catch (err) {
       setSource("offline");
       setLive([]);
       setLooking([]);
+      setActiveRides([]);
       setError(err instanceof Error ? err.message : "Live fleet unavailable");
     }
   }, [city, onlineOnly]);
@@ -397,6 +447,47 @@ export function MapView() {
     return { searchers, links, rows };
   }, [looking, city, markers]);
 
+  const tripRoutes = useMemo(() => {
+    const presenceByDriver = new Map(live.map((driver) => [driver.driverId, driver]));
+    const routes: MapTripRoute[] = [];
+    for (const ride of activeRides) {
+      if (ride.city && ride.city.toLowerCase() !== city) continue;
+      const pickup = stopCoords(ride.pickup);
+      const dropoff = stopCoords(ride.dropoff);
+      if (!pickup || !dropoff) continue;
+      const stops = (ride.stops ?? [])
+        .map((stop) => stopCoords(stop))
+        .filter((stop): stop is NonNullable<typeof stop> => Boolean(stop))
+        .map((stop) => ({ lat: stop.lat, lng: stop.lng }));
+      const presence = ride.driverId ? presenceByDriver.get(ride.driverId) : undefined;
+      const driverLat = presence?.latitude ?? ride.driverLocation?.latitude;
+      const driverLng = presence?.longitude ?? ride.driverLocation?.longitude;
+      const driver =
+        driverLat != null &&
+        driverLng != null &&
+        Number.isFinite(driverLat) &&
+        Number.isFinite(driverLng)
+          ? { lat: Number(driverLat), lng: Number(driverLng) }
+          : null;
+      const cust = ride.customerLocation;
+      const customer =
+        cust && Number.isFinite(cust.latitude) && Number.isFinite(cust.longitude)
+          ? { lat: cust.latitude, lng: cust.longitude }
+          : null;
+      routes.push({
+        id: ride.id,
+        status: String(ride.status || "").toLowerCase(),
+        label: ride.customer?.name || ride.classLabel || ride.id,
+        pickup: { lat: pickup.lat, lng: pickup.lng },
+        dropoff: { lat: dropoff.lat, lng: dropoff.lng },
+        stops,
+        driver,
+        customer,
+      });
+    }
+    return routes;
+  }, [activeRides, live, city]);
+
   const peekDriver: PeekDriver | null = useMemo(() => {
     if (!selected) return null;
     const liveMatch = live.find((d) => d.driverId === selected);
@@ -472,7 +563,7 @@ export function MapView() {
       <PageHeader
         kicker="Operations"
         title="Fleet map"
-        lede="Live drivers and customers placing orders. Blue pins are searchers; lines show the closest driver."
+        lede="Live online and on-trip drivers, searching customers, and orange corridors for active trip routes (P → D)."
         action={
           <Button startIcon={<RefreshIcon />} onClick={() => setTick((n) => n + 1)}>
             Refresh
@@ -491,8 +582,9 @@ export function MapView() {
       ) : null}
       {source === "api" ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          Live · {markers.length} driver{markers.length === 1 ? "" : "s"} · {searcherOverlays.searchers.length} looking
-          for a ride
+          Live · {markers.filter((d) => d.online).length} online ·{" "}
+          {markers.filter((d) => d.status === "on_trip").length} on trip · {tripRoutes.length} active route
+          {tripRoutes.length === 1 ? "" : "s"} · {searcherOverlays.searchers.length} looking
         </Alert>
       ) : (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -557,11 +649,16 @@ export function MapView() {
           }
           searchers={mapLayer === "drivers" ? [] : searcherOverlays.searchers}
           links={mapLayer === "both" ? searcherOverlays.links : []}
+          trips={mapLayer === "customers" ? [] : tripRoutes}
+          selectedTripId={
+            selectedSearcher ||
+            (selected ? live.find((driver) => driver.driverId === selected)?.activeRideId ?? null : null)
+          }
         />
         <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: "8px", bgcolor: "background.paper", overflow: "auto", maxHeight: { lg: 560 } }}>
           <Typography sx={{ px: 2, pt: 2, fontWeight: 700 }}>Current locations</Typography>
           <Typography color="text.secondary" sx={{ px: 2, pb: 1, fontSize: 13 }}>
-            Showing {mapLayer === "both" ? "drivers and customers" : mapLayer === "customers" ? "customers only" : "drivers only"} · {markers.filter((d) => d.online).length} online · {searcherOverlays.searchers.length} searching
+            Showing {mapLayer === "both" ? "drivers and customers" : mapLayer === "customers" ? "customers only" : "drivers only"} · {markers.filter((d) => d.online).length} online · {markers.filter((d) => d.status === "on_trip").length} on trip · {tripRoutes.length} routes · {searcherOverlays.searchers.length} searching
           </Typography>
           <Table size="small">
             <TableHead>

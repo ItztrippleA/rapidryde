@@ -5,11 +5,11 @@ import Typography from "@mui/material/Typography";
 import { useTheme } from "@mui/material/styles";
 import {
   APIProvider,
-  Map,
+  Map as GoogleMap,
   AdvancedMarker,
   useMap,
 } from "@vis.gl/react-google-maps";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { cityCenters, fromGrid, ringLatLng, type LatLng } from "@/lib/geo";
 import type { CityId } from "@/lib/types";
 
@@ -70,6 +70,20 @@ export interface MapLink {
   /** Closest driver can already see this searcher */
   ok?: boolean;
   label?: string;
+}
+
+/** Active trip corridor for the fleet map (pickup → stops → dropoff). */
+export interface MapTripRoute {
+  id: string;
+  status: string;
+  label?: string;
+  pickup: LatLng;
+  dropoff: LatLng;
+  stops?: LatLng[];
+  /** Live driver ping (prefer presence). */
+  driver?: LatLng | null;
+  /** Live customer ping while on trip. */
+  customer?: LatLng | null;
 }
 
 function mapsKey() {
@@ -382,8 +396,12 @@ function LinkPolylines({
 
 function FitBounds({ city, points, fitKey }: { city: CityId; points: LatLng[]; fitKey: string }) {
   const map = useMap();
+  const lastKey = useRef("");
   useEffect(() => {
     if (!map || typeof google === "undefined") return;
+    // Only re-fit when the set of entities changes — not on every GPS poll.
+    if (fitKey === lastKey.current) return;
+    lastKey.current = fitKey;
     if (points.length === 0) {
       map.setCenter(cityCenters[city]);
       map.setZoom(12);
@@ -401,14 +419,207 @@ function FitBounds({ city, points, fitKey }: { city: CityId; points: LatLng[]; f
   return null;
 }
 
+type TripOverlay = {
+  corridor: google.maps.Polyline;
+  approach: google.maps.Polyline | null;
+  pickup: google.maps.marker.AdvancedMarkerElement | null;
+  dropoff: google.maps.marker.AdvancedMarkerElement | null;
+  rider: google.maps.marker.AdvancedMarkerElement | null;
+};
+
+function makeChip(text: string, color: string) {
+  const chip = document.createElement("div");
+  chip.textContent = text;
+  chip.style.cssText = [
+    `color:${color}`,
+    "font:700 11px/1.2 'DM Sans',Inter,sans-serif",
+    "padding:2px 6px",
+    "border-radius:8px",
+    "background:rgba(10,8,6,0.78)",
+    "white-space:nowrap",
+    "pointer-events:none",
+  ].join(";");
+  return chip;
+}
+
+function approachIcons(active: boolean): google.maps.IconSequence[] {
+  return [
+    {
+      icon: {
+        path: "M 0,-1 0,1",
+        strokeOpacity: active ? 0.95 : 0.35,
+        scale: 3,
+        strokeColor: "#75E0A7",
+      },
+      offset: "0",
+      repeat: "10px",
+    },
+  ];
+}
+
+/** Draw active trip pickup→dropoff corridors + approach legs from the live car. */
+function TripRoutes({ trips, selectedId }: { trips: MapTripRoute[]; selectedId?: string | null }) {
+  const map = useMap();
+  const overlays = useRef(new Map<string, TripOverlay>());
+
+  useEffect(() => {
+    if (!map || typeof google === "undefined") return;
+    const MarkerEl = google.maps.marker?.AdvancedMarkerElement;
+    const seen = new Set<string>();
+
+    for (const trip of trips) {
+      seen.add(trip.id);
+      const active = !selectedId || selectedId === trip.id;
+      const corridorPath = [trip.pickup, ...(trip.stops ?? []), trip.dropoff];
+      const target =
+        trip.status === "on_trip" || trip.status === "completed" ? trip.dropoff : trip.pickup;
+      let overlay = overlays.current.get(trip.id);
+
+      if (!overlay) {
+        const corridor = new google.maps.Polyline({
+          path: corridorPath,
+          map,
+          strokeColor: "#FF6A00",
+          strokeOpacity: active ? 0.95 : 0.35,
+          strokeWeight: active ? 5 : 3,
+          geodesic: true,
+        });
+        const approach = trip.driver
+          ? new google.maps.Polyline({
+              path: [trip.driver, target],
+              map,
+              strokeColor: "#75E0A7",
+              strokeOpacity: 0,
+              strokeWeight: 0,
+              geodesic: true,
+              icons: approachIcons(active),
+            })
+          : null;
+        const pickup =
+          MarkerEl != null
+            ? new MarkerEl({
+                map,
+                position: trip.pickup,
+                content: makeChip("P", "#D6F25C"),
+                gmpClickable: false,
+                zIndex: active ? 50 : 20,
+              })
+            : null;
+        const dropoff =
+          MarkerEl != null
+            ? new MarkerEl({
+                map,
+                position: trip.dropoff,
+                content: makeChip("D", "#FF6A00"),
+                gmpClickable: false,
+                zIndex: active ? 50 : 20,
+              })
+            : null;
+        const rider =
+          MarkerEl != null && trip.customer
+            ? new MarkerEl({
+                map,
+                position: trip.customer,
+                content: makeChip("Rider", "#60A5FA"),
+                gmpClickable: false,
+                zIndex: active ? 50 : 20,
+              })
+            : null;
+        overlay = { corridor, approach, pickup, dropoff, rider };
+        overlays.current.set(trip.id, overlay);
+        continue;
+      }
+
+      overlay.corridor.setPath(corridorPath);
+      overlay.corridor.setOptions({
+        strokeOpacity: active ? 0.95 : 0.35,
+        strokeWeight: active ? 5 : 3,
+      });
+
+      if (trip.driver) {
+        if (overlay.approach) {
+          overlay.approach.setPath([trip.driver, target]);
+          overlay.approach.setOptions({ icons: approachIcons(active) });
+        } else {
+          overlay.approach = new google.maps.Polyline({
+            path: [trip.driver, target],
+            map,
+            strokeColor: "#75E0A7",
+            strokeOpacity: 0,
+            strokeWeight: 0,
+            geodesic: true,
+            icons: approachIcons(active),
+          });
+        }
+      } else if (overlay.approach) {
+        overlay.approach.setMap(null);
+        overlay.approach = null;
+      }
+
+      if (overlay.pickup) {
+        overlay.pickup.position = trip.pickup;
+        overlay.pickup.zIndex = active ? 50 : 20;
+      }
+      if (overlay.dropoff) {
+        overlay.dropoff.position = trip.dropoff;
+        overlay.dropoff.zIndex = active ? 50 : 20;
+      }
+      if (trip.customer) {
+        if (overlay.rider) {
+          overlay.rider.position = trip.customer;
+          overlay.rider.zIndex = active ? 50 : 20;
+        } else if (MarkerEl) {
+          overlay.rider = new MarkerEl({
+            map,
+            position: trip.customer,
+            content: makeChip("Rider", "#60A5FA"),
+            gmpClickable: false,
+            zIndex: active ? 50 : 20,
+          });
+        }
+      } else if (overlay.rider) {
+        overlay.rider.map = null;
+        overlay.rider = null;
+      }
+    }
+
+    for (const [id, overlay] of overlays.current) {
+      if (seen.has(id)) continue;
+      overlay.corridor.setMap(null);
+      overlay.approach?.setMap(null);
+      if (overlay.pickup) overlay.pickup.map = null;
+      if (overlay.dropoff) overlay.dropoff.map = null;
+      if (overlay.rider) overlay.rider.map = null;
+      overlays.current.delete(id);
+    }
+  }, [map, trips, selectedId]);
+
+  useEffect(() => {
+    return () => {
+      for (const overlay of overlays.current.values()) {
+        overlay.corridor.setMap(null);
+        overlay.approach?.setMap(null);
+        if (overlay.pickup) overlay.pickup.map = null;
+        if (overlay.dropoff) overlay.dropoff.map = null;
+        if (overlay.rider) overlay.rider.map = null;
+      }
+      overlays.current.clear();
+    };
+  }, []);
+
+  return null;
+}
+
 function MapBody({
   city,
   regions,
   markers,
   searchers,
   links,
+  trips = [],
   selected,
   selectedSearcher,
+  selectedTripId,
   onSelect,
   onSelectSearcher,
 }: {
@@ -417,8 +628,10 @@ function MapBody({
   markers: MapMarker[];
   searchers: MapSearcher[];
   links: MapLink[];
+  trips?: MapTripRoute[];
   selected: string | null;
   selectedSearcher?: string | null;
+  selectedTripId?: string | null;
   onSelect: (id: string) => void;
   onSelectSearcher?: (id: string) => void;
 }) {
@@ -446,18 +659,38 @@ function MapBody({
     [searchers, city],
   );
 
+  const tripPoints = useMemo(() => {
+    const points: LatLng[] = [];
+    for (const trip of trips) {
+      // Fit to fixed corridor ends — ignore live driver/rider pings so polls don't reframe the map.
+      points.push(trip.pickup, trip.dropoff, ...(trip.stops ?? []));
+    }
+    return points;
+  }, [trips]);
+
   const fitPoints = useMemo(
-    () => [...markerPoints.map((row) => row.point), ...searcherPoints.map((row) => row.point)],
-    [markerPoints, searcherPoints],
+    () => [
+      ...markerPoints.map((row) => row.point),
+      ...searcherPoints.map((row) => row.point),
+      ...tripPoints,
+    ],
+    [markerPoints, searcherPoints, tripPoints],
   );
 
+  // Structural key only — entity set / city, not live coordinates.
   const fitKey = useMemo(
-    () => fitPoints.map((point) => `${point.lat.toFixed(5)},${point.lng.toFixed(5)}`).join("|"),
-    [fitPoints],
+    () =>
+      [
+        city,
+        ...markers.map((marker) => marker.id).sort(),
+        ...searchers.map((searcher) => searcher.id).sort(),
+        ...trips.map((trip) => trip.id).sort(),
+      ].join("|"),
+    [city, markers, searchers, trips],
   );
 
   return (
-    <Map
+    <GoogleMap
       key={city}
       defaultCenter={cityCenters[city]}
       defaultZoom={12}
@@ -472,6 +705,7 @@ function MapBody({
     >
       <FitBounds city={city} points={fitPoints} fitKey={fitKey} />
       <ZonePolygons city={city} regions={regions} />
+      <TripRoutes trips={trips} selectedId={selectedTripId || selectedSearcher} />
       <LinkPolylines city={city} links={links} selectedSearcher={selectedSearcher} />
 
       {searcherPoints.map(({ searcher, point }) => (
@@ -516,7 +750,7 @@ function MapBody({
           </AdvancedMarker>
         );
       })}
-    </Map>
+    </GoogleMap>
   );
 }
 
@@ -526,8 +760,10 @@ export function FleetMap({
   markers,
   searchers = [],
   links = [],
+  trips = [],
   selected,
   selectedSearcher,
+  selectedTripId,
   onSelect,
   onSelectSearcher,
 }: {
@@ -536,8 +772,10 @@ export function FleetMap({
   markers: MapMarker[];
   searchers?: MapSearcher[];
   links?: MapLink[];
+  trips?: MapTripRoute[];
   selected: string | null;
   selectedSearcher?: string | null;
+  selectedTripId?: string | null;
   onSelect: (id: string) => void;
   onSelectSearcher?: (id: string) => void;
 }) {
@@ -570,8 +808,10 @@ export function FleetMap({
             markers={markers}
             searchers={searchers}
             links={links}
+            trips={trips}
             selected={selected}
             selectedSearcher={selectedSearcher}
+            selectedTripId={selectedTripId}
             onSelect={onSelect}
             onSelectSearcher={onSelectSearcher}
           />
