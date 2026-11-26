@@ -966,6 +966,17 @@ export class RidesService {
         );
       }
     }
+
+    /** Mid-trip customer cancel → charge distance already ridden; driver keeps earnings. */
+    let midTripSettlement: {
+      fare: number;
+      earnings: number;
+      actualKm: number;
+    } | null = null;
+    if (status === 'cancelled' && by === 'customer' && priorStatus === 'on_trip') {
+      midTripSettlement = await this.settleMidTripCancel(next, note);
+    }
+
     next.updatedAt = now;
     await this.store.upsertRide(next);
     const stagePayload = {
@@ -974,6 +985,14 @@ export class RidesService {
       ...(next.pickupPin && /^\d{4}$/.test(next.pickupPin)
         ? { pickupPin: next.pickupPin }
         : {}),
+      ...(midTripSettlement
+        ? {
+            fare: midTripSettlement.fare,
+            earnings: midTripSettlement.earnings,
+            actualKm: midTripSettlement.actualKm,
+            midTripCancel: true,
+          }
+        : {}),
     };
     this.bus.toRide(id, 'ride:stage', stagePayload);
     // Always mirror stage to the rider's user room — they may not be in ride:{id}
@@ -981,14 +1000,30 @@ export class RidesService {
     this.bus.toUser(next.customerId, 'ride:stage', stagePayload);
     // Drivers listen on ride:cancelled (HTTP stage alone was only ride:stage).
     if (status === 'cancelled') {
-      this.bus.toRide(id, 'ride:cancelled', { id, by });
-      this.bus.toUser(next.customerId, 'ride:cancelled', { id, by });
+      const cancelPayload = {
+        id,
+        by,
+        ...(midTripSettlement
+          ? {
+              fare: midTripSettlement.fare,
+              earnings: midTripSettlement.earnings,
+              actualKm: midTripSettlement.actualKm,
+              midTripCancel: true,
+              note: note || undefined,
+            }
+          : {}),
+      };
+      this.bus.toRide(id, 'ride:cancelled', cancelPayload);
+      this.bus.toUser(next.customerId, 'ride:cancelled', cancelPayload);
       if (next.driverId) {
-        this.bus.toDriver(next.driverId, 'ride:cancelled', { id, by });
+        this.bus.toDriver(next.driverId, 'ride:cancelled', cancelPayload);
       }
-      // Customer cancel after a driver was assigned → fee on their next trip (silent).
-      if (by === 'customer') {
+      // Pre-trip cancel after assign → flat fee on next ride. Mid-trip already billed.
+      if (by === 'customer' && !midTripSettlement) {
         void this.recordCustomerCancelFee(next, priorStatus, note);
+      }
+      if (midTripSettlement) {
+        void this.jobs.enqueue('ledger.settle', { rideId: id });
       }
     }
 
@@ -1101,9 +1136,11 @@ export class RidesService {
               : status === 'cancelled'
                 ? by === 'driver'
                   ? 'Your driver cancelled this trip.'
-                  : by === 'customer'
-                    ? 'You cancelled this trip.'
-                    : 'This trip was cancelled.'
+                  : by === 'customer' && midTripSettlement
+                    ? `Trip ended early · ${midTripSettlement.actualKm.toFixed(1)} km · ₦${midTripSettlement.fare}`
+                    : by === 'customer'
+                      ? 'You cancelled this trip.'
+                      : 'This trip was cancelled.'
                 : status,
       data: { rideId: id, stage: status },
     });
@@ -1337,6 +1374,81 @@ export class RidesService {
     };
   }
 
+  /**
+   * Rider ends the trip after boarding: bill for distance already covered
+   * (pickup → current point) and pay the driver that fare's earnings.
+   */
+  private async settleMidTripCancel(
+    ride: Awaited<ReturnType<RidesService['get']>>,
+    reason?: string,
+  ) {
+    const here =
+      (ride.driverLocation &&
+      Number.isFinite(ride.driverLocation.latitude) &&
+      Number.isFinite(ride.driverLocation.longitude)
+        ? ride.driverLocation
+        : null) ||
+      (ride.customerLocation &&
+      Number.isFinite(ride.customerLocation.latitude) &&
+      Number.isFinite(ride.customerLocation.longitude)
+        ? ride.customerLocation
+        : null) ||
+      ride.pickup;
+
+    let traveledKm = kmBetween(
+      { latitude: ride.pickup.latitude, longitude: ride.pickup.longitude },
+      { latitude: here.latitude, longitude: here.longitude },
+    );
+    try {
+      const routed = await this.routing.route(
+        {
+          latitude: ride.pickup.latitude,
+          longitude: ride.pickup.longitude,
+        },
+        { latitude: here.latitude, longitude: here.longitude },
+        [],
+      );
+      if (routed?.km && routed.km > 0) traveledKm = routed.km;
+    } catch {
+      /* haversine fallback */
+    }
+
+    const minutes = Math.max(
+      1,
+      ride.actualMinutes ||
+        (ride.onboardAt
+          ? Math.round((Date.now() - ride.onboardAt) / 60_000)
+          : 1),
+    );
+    const quote = await this.pricing.quote({
+      km: Math.max(0.2, traveledKm),
+      minutes,
+      classId: ride.classId || 'ryde',
+      promoCode: ride.promoCode || undefined,
+    });
+    // Never exceed the original agreed fare for an early end.
+    const fare = Math.min(
+      Math.max(0, Math.round(ride.fare || ride.quoted || quote.fare)),
+      Math.max(0, Math.round(quote.fare)),
+    );
+    const earnings = Math.round(fare * (1 - (ride.commissionPercent || 0) / 100));
+    const actualKm = Math.round(Math.max(0.1, traveledKm) * 10) / 10;
+
+    ride.actualKm = actualKm;
+    ride.actualMinutes = minutes;
+    ride.fare = fare;
+    ride.earnings = earnings;
+    ride.fareHistory.push({
+      fare,
+      quoted: ride.quoted,
+      at: Date.now(),
+      by: 'system',
+      note: `Mid-trip cancel · ${actualKm} km · ${(reason || '').trim() || 'customer'}`,
+    });
+
+    return { fare, earnings, actualKm };
+  }
+
   /** Queue cancellationFee for the next ride when the rider cancels after assign. */
   private async recordCustomerCancelFee(
     ride: Awaited<ReturnType<RidesService['get']>>,
@@ -1347,7 +1459,6 @@ export class RidesService {
       'assigned',
       'to_pickup',
       'arrived',
-      'on_trip',
     ]);
     if (!ride.driverId && !chargedStages.has(priorStatus)) return;
     if (!chargedStages.has(priorStatus) && !ride.assignedAt) return;
